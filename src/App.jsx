@@ -608,7 +608,7 @@ function Gallery({ items }) {
     <div onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
       {/* featured carousel */}
       <div style={{ position: "relative", borderRadius: 22, overflow: "hidden",
-        aspectRatio: "16 / 9", maxHeight: 560,
+        aspectRatio: "16 / 9",
         background: grad(i), display: "grid", placeItems: "center", marginBottom: 16 }}>
         {items[i].img && (
           <img src={items[i].img} alt={items[i].caption}
