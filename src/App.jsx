@@ -612,7 +612,7 @@ function Gallery({ items }) {
         background: grad(i), display: "grid", placeItems: "center", marginBottom: 16 }}>
         {items[i].img && (
           <img src={items[i].img} alt={items[i].caption}
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }} />
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
         )}
         {!items[i].img && <div style={{ position: "absolute", inset: 0, opacity: .15 }}><PatternField /></div>}
         <div style={{ position: "relative", textAlign: "center", color: "#fff",
