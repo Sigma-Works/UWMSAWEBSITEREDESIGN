@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { supabase, loadContent, saveContent } from "./supabase";
+import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl } from "./supabase";
 import {
   Menu, X, Heart, MapPin, Clock, Calendar, Users, BookOpen,
   ShoppingBag, Instagram, Facebook, MessageCircle, Link2,
@@ -1038,14 +1038,14 @@ function Editor({ tab, data, setData }) {
       <ListEditor title="Photos" items={data.gallery}
         onChange={(gallery) => up({ gallery })}
         blank={{ caption: "New photo", tag: "Tag" }}
-        fields={[["caption", "Caption"], ["tag", "Tag"]]} />
+        fields={[["img", "Photo", "image"], ["caption", "Caption"], ["tag", "Tag"]]} />
     );
 
   if (tab === "sponsors")
     return (
       <ListEditor title="Sponsors" items={data.sponsors}
         onChange={(sponsors) => up({ sponsors })}
-        blank={{ name: "New sponsor" }} fields={[["name", "Name"]]} />
+        blank={{ name: "New sponsor" }} fields={[["logo", "Logo", "image"], ["name", "Name"]]} />
     );
 
   if (tab === "spaces")
@@ -1098,7 +1098,7 @@ function Editor({ tab, data, setData }) {
               color: PURPLE, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               {day}
               <button onClick={() => setDay(day, [...(data.events[day] || []),
-                { id: Date.now(), name: "New event", time: "", loc: "", desc: "" }])}
+                { id: Date.now(), name: "New event", time: "", loc: "", desc: "", img: "" }])}
                 style={miniBtn}><Plus size={14} /> Add</button>
             </div>
             <div style={{ padding: 12, display: "grid", gap: 12 }}>
@@ -1116,6 +1116,10 @@ function Editor({ tab, data, setData }) {
                     onChange={(ev) => { const c = [...data.events[day]]; c[idx] = { ...e, loc: ev.target.value }; setDay(day, c); }} />
                   <input style={{ ...inpSm, gridColumn: "1 / 4" }} placeholder="Description (optional)" value={e.desc}
                     onChange={(ev) => { const c = [...data.events[day]]; c[idx] = { ...e, desc: ev.target.value }; setDay(day, c); }} />
+                  <div style={{ gridColumn: "1 / 4" }}>
+                    <ImageField label="Event photo (optional)" value={e.img || ""} folder="events"
+                      onChange={(url) => { const c = [...data.events[day]]; c[idx] = { ...e, img: url }; setDay(day, c); }} />
+                  </div>
                 </div>
               ))}
             </div>
@@ -1161,7 +1165,51 @@ function Field({ label, children }) {
     </div>
   );
 }
+// Upload / preview / remove a single image (gallery, sponsors, events).
+function ImageField({ value, onChange, folder = "gallery", label = "Image" }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const inputRef = useRef(null);
 
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErr(""); setBusy(true);
+    const res = await uploadImage(file, folder);
+    setBusy(false);
+    if (res.ok) onChange(res.url); else setErr(res.error);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const remove = async () => {
+    const p = pathFromUrl(value);
+    onChange("");
+    if (p) await deleteImage(p);
+  };
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ fontSize: 12, fontWeight: 600, color: "#7a7488" }}>{label}</label>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 5 }}>
+        <div style={{ width: 74, height: 56, borderRadius: 9, overflow: "hidden", flexShrink: 0,
+          border: "1px solid rgba(0,0,0,.12)", background: "#f4f2f8", display: "grid", placeItems: "center" }}>
+          {value ? <img src={value} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                 : <span style={{ fontSize: 10.5, color: "#b0aac0" }}>None</span>}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" onClick={() => inputRef.current?.click()} disabled={busy}
+            style={{ ...miniBtn, opacity: busy ? .6 : 1 }}>
+            {busy ? "Uploading…" : value ? "Replace" : "Upload"}
+          </button>
+          {value && <button type="button" onClick={remove}
+            style={{ ...miniBtn, background: "rgba(192,57,43,.1)", color: "#c0392b" }}>Remove</button>}
+          <input ref={inputRef} type="file" accept="image/*" onChange={pick} style={{ display: "none" }} />
+        </div>
+      </div>
+      {err && <div style={{ color: "#c0392b", fontSize: 12, marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
 function ListEditor({ title, items, onChange, blank, fields }) {
   const add = () => onChange([...items, { id: Date.now(), ...blank }]);
   const del = (i) => onChange(items.filter((_, n) => n !== i));
@@ -1174,11 +1222,17 @@ function ListEditor({ title, items, onChange, blank, fields }) {
         {items.map((it, i) => (
           <div key={it.id} style={{ border: "1px solid rgba(0,0,0,.1)", borderRadius: 12,
             padding: 14, display: "grid", gap: 8, position: "relative" }}>
-            {fields.map(([key, lbl]) => (
-              <div key={key}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#7a7488" }}>{lbl}</label>
-                <input style={inpSm} value={it[key] || ""} onChange={(e) => edit(i, key, e.target.value)} />
-              </div>
+            {fields.map(([key, lbl, kind]) => (
+              kind === "image" ? (
+                <ImageField key={key} label={lbl} value={it[key] || ""}
+                  folder={title.toLowerCase().includes("sponsor") ? "sponsors" : "gallery"}
+                  onChange={(url) => edit(i, key, url)} />
+              ) : (
+                <div key={key}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "#7a7488" }}>{lbl}</label>
+                  <input style={inpSm} value={it[key] || ""} onChange={(e) => edit(i, key, e.target.value)} />
+                </div>
+              )
             ))}
             <button onClick={() => del(i)} style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
               aria-label="Delete"><Trash2 size={15} /></button>
