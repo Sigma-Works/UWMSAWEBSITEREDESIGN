@@ -536,17 +536,22 @@ function HomeSection({ data, onNav }) {
         <Title>Our sponsors & partners</Title>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))",
           gap: 16, marginTop: 32 }}>
-          {data.sponsors.map((s) => (
-            <div key={s.id} className="lift" style={{ ...card, display: "grid", placeItems: "center",
-              height: 96, textAlign: "center", padding: 16 }}>
-              {s.logo ? (
-                <img src={s.logo} alt={s.name}
-                  style={{ maxHeight: 60, maxWidth: "100%", objectFit: "contain" }} />
-              ) : (
-                <span style={{ fontWeight: 700, color: PURPLE, fontSize: 15 }}>{s.name}</span>
-              )}
-            </div>
-          ))}
+          {data.sponsors.map((s) => {
+            const inner = s.logo ? (
+              <img src={s.logo} alt={s.name}
+                style={{ maxHeight: 60, maxWidth: "100%", objectFit: "contain" }} />
+            ) : (
+              <span style={{ fontWeight: 700, color: PURPLE, fontSize: 15 }}>{s.name}</span>
+            );
+            const boxStyle = { ...card, display: "grid", placeItems: "center",
+              height: 96, textAlign: "center", padding: 16, textDecoration: "none" };
+            return s.url ? (
+              <a key={s.id} href={s.url} target="_blank" rel="noopener noreferrer"
+                className="lift" style={boxStyle} title={`Visit ${s.name}`}>{inner}</a>
+            ) : (
+              <div key={s.id} className="lift" style={boxStyle}>{inner}</div>
+            );
+          })}
         </div>
         <div style={{ marginTop: 40, ...card, padding: "32px 28px", display: "flex",
           alignItems: "center", justifyContent: "space-between", gap: 20, flexWrap: "wrap",
@@ -580,6 +585,17 @@ function PatternField() {
 
 function Gallery({ items }) {
   const [i, setI] = useState(0);
+  const [paused, setPaused] = useState(false);
+
+  // Auto-advance every 5s; pauses on hover and when the tab is hidden.
+  useEffect(() => {
+    if (paused || items.length < 2) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const t = setInterval(() => {
+      if (!document.hidden) setI((n) => (n + 1) % items.length);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [paused, items.length, i]);
   const grad = (n) => {
     const g = [
       `linear-gradient(135deg,${PURPLE},${VIOLET})`, `linear-gradient(135deg,${MAUVE},${PINK})`,
@@ -589,7 +605,7 @@ function Gallery({ items }) {
     return g[n % g.length];
   };
   return (
-    <div>
+    <div onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
       {/* featured carousel */}
       <div style={{ position: "relative", borderRadius: 22, overflow: "hidden", height: 340,
         background: grad(i), display: "grid", placeItems: "center", marginBottom: 16 }}>
@@ -1050,10 +1066,10 @@ function Editor({ tab, data, setData }) {
 
   if (tab === "spaces")
     return (
-      <ListEditor title="Prayer spaces" items={data.prayerSpaces}
-        onChange={(prayerSpaces) => up({ prayerSpaces })}
-        blank={{ name: "New space", loc: "Location", note: "" }}
-        fields={[["name", "Name"], ["loc", "Location"], ["note", "Note"]]} />
+      <ListEditor title="Sponsors" items={data.sponsors}
+        onChange={(sponsors) => up({ sponsors })}
+        blank={{ name: "New sponsor", url: "" }}
+        fields={[["logo", "Logo", "image"], ["name", "Name"], ["url", "Website URL (optional)"]]} />
     );
 
   if (tab === "times") {
