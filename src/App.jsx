@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl,
   subscribe, listSubscribers } from "./supabase";
+// Lazy — keeps anime.js out of the initial bundle. It only downloads when
+// a visitor actually scrolls near the Quad section.
+const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
 import {
   Menu, X, Heart, MapPin, Clock, Calendar, Users, BookOpen,
   ShoppingBag, Instagram, Facebook, MessageCircle, Link2,
@@ -854,6 +857,8 @@ const seed = {
   // `body` supports light Markdown: **bold**, *italic*, [text](url), and
   // blank lines for paragraphs.
   sections: {
+    quad:     { eyebrow: "On the Quad", title: "Where spring finds us",
+                body: "Every April the Quad turns pink and the whole campus slows down for a week. It's where we gather, where new students find us, and where the community feels smallest and warmest." },
     about:    { eyebrow: "Who we are", title: "About MSA at UW",
                 body: "The Muslim Student Association is a home away from home for Muslim Huskies. We're here so that no student has to navigate university life alone — whether that means finding a place to pray between classes, a community to break fast with, or friends who understand." },
     announcements: { eyebrow: "Latest", title: "Announcements",
@@ -1189,6 +1194,7 @@ export default function App() {
         <AnnouncementsSection data={data} />
         <DonateSection data={data} />
         <AboutSection data={data} />
+        <QuadSection data={data} />
         <PrayerSection data={data} />
         <IslamicHouseSection data={data} />
         <SponsorsSection data={data} />
@@ -1382,6 +1388,30 @@ function StyleTag() {
                  text-decoration: none; white-space: nowrap;
                  transition: gap ${DUR.fast}ms ${EASE.out}; }
       .barlink:hover { gap: 7px; text-decoration: underline; }
+
+      /* ── Cinematic film grain ───────────────────────────────────────────
+         A very faint animated noise layer over dark sections. It's the
+         thing that reads as "shot on film" rather than "rendered". */
+      @keyframes grainShift {
+        0%,100% { transform: translate3d(0,0,0); }
+        10% { transform: translate3d(-2%,-3%,0); }
+        30% { transform: translate3d(3%,-2%,0); }
+        50% { transform: translate3d(-1%,2%,0); }
+        70% { transform: translate3d(2%,1%,0); }
+        90% { transform: translate3d(-3%,-1%,0); }
+      }
+      .grain::after {
+        content: ""; position: absolute; inset: -12%;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.38'/%3E%3C/svg%3E");
+        opacity: .05; pointer-events: none; mix-blend-mode: overlay;
+        animation: grainShift 5s steps(6) infinite;
+      }
+
+      /* ── Cinematic vignette for dark sections ───────────────────────── */
+      .vignette::before {
+        content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+        background: radial-gradient(ellipse at 50% 45%, transparent 42%, rgba(12,9,17,.55) 100%);
+      }
 
       /* ── Ambient scroll lighting ────────────────────────────────────── */
       @keyframes lightDrift {
@@ -1862,7 +1892,7 @@ function Lead({ children, delay = 260, style }) {
 function HomeSection({ data, onNav }) {
   return (
     <>
-      <section id="home" style={{ position: "relative", overflow: "hidden",
+      <section id="home" className="grain vignette" style={{ position: "relative", overflow: "hidden",
         background: GRAD_DEEP,   // stays as the base layer when no video is set
         color: "#fff", padding: "104px 20px 0" }}>
         <HeroVideo config={data.heroVideo} />
@@ -3250,6 +3280,80 @@ function SearchOverlay({ open, onClose, data, onNav }) {
   );
 }
 
+/* Defers loading the tree (and anime.js with it) until the section is close
+   to the viewport, so the initial page load stays light. */
+function LazyQuadTree({ reduced }) {
+  const [ref, near] = useInView({ threshold: 0, rootMargin: "600px 0px" });
+  return (
+    <div ref={ref} style={{ minHeight: 430 }}>
+      {near && (
+        <React.Suspense fallback={<div style={{ height: 430 }} />}>
+          <QuadTree reduced={reduced} height={430}
+            accent={PINK} bark="#6b5545" gold={GOLD}
+            petalColors={[PINK, "#e8c4d4", MAUVE]} />
+        </React.Suspense>
+      )}
+    </div>
+  );
+}
+
+/* ---------- THE QUAD ----------
+   A full-bleed cinematic moment: a cherry blossom tree draws itself as you
+   scroll, then sheds petals. Ties the site to the most recognisable place
+   on campus without needing photography we don't have. */
+function QuadSection({ data }) {
+  const reduced = useReducedMotion();
+  const copy = data?.sections?.quad || seed.sections.quad;
+  return (
+    <section id="quad" className="grain vignette" style={{ position: "relative", overflow: "hidden",
+      background: GRAD_DEEP, color: "#fff", padding: "96px 20px 0" }}>
+      <AmbientGlow subtle />
+      <div aria-hidden="true" style={{ position: "absolute", top: "-14%", left: "-6%",
+        pointerEvents: "none", zIndex: 0 }}>
+        <ScrollSpin speed={16}>
+          <Rosette points={16} skip={7} size={300} color={GOLD} opacity={0.08} />
+        </ScrollSpin>
+      </div>
+
+      <div style={{ position: "relative", zIndex: 2, maxWidth: 760, margin: "0 auto",
+        textAlign: "center" }}>
+        <Reveal variant="up" distance={18}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.16)",
+            border: "1px solid rgba(201,182,136,.4)", marginBottom: 18 }}>
+            <Star8 size={14} color={GOLD} />
+            <span style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: "1.4px",
+              textTransform: "uppercase", color: GOLD }}>{copy.eyebrow}</span>
+          </div>
+        </Reveal>
+        <h2 style={{ fontSize: "clamp(26px,4vw,42px)", fontWeight: 800, letterSpacing: "-1px",
+          lineHeight: 1.12, margin: "0 0 16px" }}>
+          <TextReveal text={copy.title} delay={60} step={48} />
+        </h2>
+        <Reveal delay={240} variant="up" distance={16}>
+          <div style={{ color: "rgba(255,255,255,.82)", fontSize: 16.5, lineHeight: 1.7,
+            maxWidth: 560, margin: "0 auto" }}>
+            <Markdown text={copy.body} style={{ margin: "0 0 10px" }} />
+          </div>
+        </Reveal>
+      </div>
+
+      {/* the tree itself */}
+      <div style={{ position: "relative", zIndex: 1, maxWidth: 900, margin: "-10px auto 0" }}>
+        <LazyQuadTree reduced={reduced} />
+      </div>
+
+      {/* horizon line so the tree stands on something */}
+      <div aria-hidden="true" style={{ position: "relative", zIndex: 1, height: 1,
+        background: `linear-gradient(90deg, transparent, ${GOLD}55 22%, ${GOLD}55 78%, transparent)`,
+        maxWidth: 1100, margin: "0 auto" }} />
+      <div style={{ position: "relative", zIndex: 1 }}>
+        <GirihBand color="rgba(201,182,136,.4)" height={46} opacity={1} unit={50} />
+      </div>
+    </section>
+  );
+}
+
 /* ---------- ABOUT ---------- */
 function AboutSection({ data }) {
   const about = data.about || seed.about;
@@ -3369,7 +3473,7 @@ function AnnouncementsSection({ data }) {
 function DonateSection({ data }) {
   const d = data.donate || seed.donate;
   return (
-    <section id="donate" style={{ position: "relative", overflow: "hidden",
+    <section id="donate" className="grain vignette" style={{ position: "relative", overflow: "hidden",
       background: GRAD_DEEP, color: "#fff", padding: "88px 20px" }}>
       <AmbientGlow subtle />
       <div aria-hidden="true" style={{ position: "absolute", top: "-24%", left: "-6%",
@@ -4339,7 +4443,7 @@ function Editor({ tab, data, setData }) {
 
   if (tab === "copy") {
     const SECTION_KEYS = [
-      ["about", "About"], ["announcements", "Announcements"], ["donate", "Donate"],
+      ["about", "About"], ["quad", "The Quad"], ["announcements", "Announcements"], ["donate", "Donate"],
       ["islamicHouse", "Islamic House"], ["gallery", "Photo gallery"],
       ["sponsors", "Sponsors"], ["board", "Board members"], ["prayer", "Prayer"],
       ["events", "Events"], ["programs", "Programs"], ["connect", "Connect"],
