@@ -3032,25 +3032,28 @@ function PatternField() {
 }
 
 /* ── Gallery / "Moments from the year" ────────────────────────────────────
-   A round, scroll-driven 3D photo carousel — each photo its own circular
+   A round, scroll-driven 3D photo carousel — each photo its own rectangular
    "subsection" arranged evenly around a ring, in the spirit of the circular
    carousels at inkwell.tech / the Codrops "Scroll-Driven Circular 3D
    Carousel" piece. Scrolling through the pinned section spins the ring
    (smoothed with a lerp toward the scroll-driven target angle, giving it
    weight/momentum instead of snapping 1:1 to scroll), the cursor tilts the
    whole assembly slightly toward it, cards dim/brighten by how far around
-   the ring they currently sit (front = brightest), and the caption of
-   whichever photo is currently front-and-center is called out below.
+   the ring they currently sit (front = brightest, and — a free side effect
+   of real perspective — biggest, since translateZ pushes the front card
+   toward the camera), and the caption of whichever photo is currently
+   front-and-center is called out below. Small arrow buttons flank the ring
+   so it can be stepped one photo at a time by hand, independent of scroll.
 
    Built with plain CSS 3D (perspective + rotateY/translateZ), not
    WebGL/Three.js like the reference — this site has zero 3D-engine
    dependency today and mobile performance was a real pain point earlier in
-   this project, so the carousel *language* (ring of circular photos, real
-   depth, momentum-driven spin, cursor reactivity) is reproduced without
-   pulling in a renderer. The one thing intentionally left out is the
-   reference's WebGL-only post-processing (chromatic aberration / shader
-   distortion) and raycasted hover — everything else about "a round
-   carousel that spins as you scroll" is here. */
+   this project, so the carousel *language* (ring of photos, real depth,
+   momentum-driven spin, cursor reactivity) is reproduced without pulling in
+   a renderer. The one thing intentionally left out is the reference's
+   WebGL-only post-processing (chromatic aberration / shader distortion) and
+   raycasted hover — everything else about "a round carousel that spins as
+   you scroll" is here. */
 function Gallery({ items }) {
   const reduced = useReducedMotion();
   const wrapRef = useRef(null);
@@ -3058,6 +3061,7 @@ function Gallery({ items }) {
   const sceneRef = useRef(null);
   const ringRef = useRef(null);
   const cardRefs = useRef([]);
+  const rotateRef = useRef(() => {});
   const [activeIdx, setActiveIdx] = useState(0);
 
   const list = (items?.length ? items : []).filter(Boolean);
@@ -3080,7 +3084,8 @@ function Gallery({ items }) {
 
     const canHover = window.matchMedia?.("(hover: hover)").matches;
     let raf = 0, inView = false;
-    let angle = 0, angleTarget = 0;     // ring's own scroll-driven spin (deg)
+    let angle = 0, angleTarget = 0;     // ring's own spin (deg): scroll + manual
+    let manualOffset = 0;               // added by the arrow buttons
     let tiltX = 0, tiltXTarget = 0;     // cursor-driven tilt (deg)
     let tiltY = 0, tiltYTarget = 0;
     let radius = 0;
@@ -3088,22 +3093,25 @@ function Gallery({ items }) {
 
     // Sizes each card and the ring radius off the scene's own measured
     // width — fewer photos get bigger cards, more photos shrink to keep
-    // the ring from overflowing, and the radius is the minimum needed for
-    // evenly-spaced cards around a circle not to overlap (plus headroom).
+    // the ring from overflowing. Cards are rectangular (4:3); the radius is
+    // the minimum needed for evenly-spaced cards around a circle not to
+    // overlap (measured off card *width*, since that's the dimension that
+    // matters for angular spacing), plus headroom.
     const layout = () => {
       const w = scene.clientWidth || 1;
-      const base = n <= 5 ? 0.30 : n <= 8 ? 0.24 : n <= 12 ? 0.19 : 0.15;
-      const cardSize = Math.max(72, Math.min(230, w * base));
-      const minRadius = n > 1 ? (cardSize / 2) / Math.sin(Math.PI / n) : 0;
-      radius = Math.max(minRadius * 1.22, cardSize * 0.7);
+      const base = n <= 5 ? 0.46 : n <= 8 ? 0.36 : n <= 12 ? 0.28 : 0.22;
+      const cardWidth = Math.max(150, Math.min(460, w * base));
+      const cardHeight = cardWidth * 0.75; // 4:3
+      const minRadius = n > 1 ? (cardWidth / 2) / Math.sin(Math.PI / n) : 0;
+      radius = Math.max(minRadius * 1.18, cardWidth * 0.62);
       sticky.style.perspective = `${Math.max(900, w * 1.15)}px`;
       cardRefs.current.forEach((card, i) => {
         if (!card) return;
         const a = (360 / n) * i;
-        card.style.width = `${cardSize}px`;
-        card.style.height = `${cardSize}px`;
-        card.style.marginLeft = `${-cardSize / 2}px`;
-        card.style.marginTop = `${-cardSize / 2}px`;
+        card.style.width = `${cardWidth}px`;
+        card.style.height = `${cardHeight}px`;
+        card.style.marginLeft = `${-cardWidth / 2}px`;
+        card.style.marginTop = `${-cardHeight / 2}px`;
         card.dataset.angle = a;
         card.style.transform = `rotateY(${a}deg) translateZ(${radius}px)`;
       });
@@ -3112,7 +3120,8 @@ function Gallery({ items }) {
     // 0 at the top of the pinned runway, 1 once scrolled all the way
     // through it — same "tall spacer + sticky viewport" trick used
     // elsewhere on the site, just read manually here instead of via a
-    // scroll-linking library.
+    // scroll-linking library. Manual arrow clicks add a flat offset on top
+    // of whatever the scroll position already dictates.
     const computeProgress = () => {
       const rect = wrap.getBoundingClientRect();
       const total = rect.height - window.innerHeight;
@@ -3120,7 +3129,12 @@ function Gallery({ items }) {
       return Math.max(0, Math.min(1, -rect.top / total));
     };
 
-    const measure = () => { angleTarget = computeProgress() * 360; startLoop(); };
+    const measure = () => { angleTarget = computeProgress() * 360 + manualOffset; startLoop(); };
+
+    // Exposed to the arrow buttons in the JSX below via rotateRef — steps
+    // exactly one card forward/back regardless of current scroll position.
+    const rotate = (dir) => { manualOffset += dir * (360 / n); measure(); };
+    rotateRef.current = rotate;
 
     const onPointerMove = (e) => {
       const rect = scene.getBoundingClientRect();
@@ -3199,20 +3213,21 @@ function Gallery({ items }) {
         scene.removeEventListener("pointerleave", onPointerLeave);
       }
       document.removeEventListener("visibilitychange", onVisibility);
+      rotateRef.current = () => {};
     };
   }, [reduced, n]);
 
   if (n === 0) return null;
 
-  // Reduced-motion fallback: a plain static grid of circular photos, fully
-  // visible immediately, no spinning ring at all.
+  // Reduced-motion fallback: a plain static grid of rectangular photos,
+  // fully visible immediately, no spinning ring at all.
   if (reduced) {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))",
-        gap: "clamp(14px,2.6vw,26px)", justifyItems: "center" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
+        gap: "clamp(14px,2.6vw,26px)" }}>
         {list.map((it, i) => (
-          <div key={it.id ?? i} style={{ width: "100%", maxWidth: 160, borderRadius: "50%",
-            overflow: "hidden", aspectRatio: "1 / 1", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
+          <div key={it.id ?? i} style={{ borderRadius: 16,
+            overflow: "hidden", aspectRatio: "4 / 3", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
             {it.img
               ? <img src={it.img} alt={it.caption || ""} loading="lazy"
                   style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -3226,23 +3241,37 @@ function Gallery({ items }) {
   return (
     <div ref={wrapRef} className="carousel-wrap">
       <div className="carousel-sticky" ref={stickyRef}>
-        <div className="carousel-scene" ref={sceneRef}>
-          <div className="carousel-ground" aria-hidden="true" />
-          <div className="carousel-ring" ref={ringRef}>
-            {list.map((it, i) => (
-              <div key={it.id ?? i} className="carousel-card"
-                ref={(el) => { cardRefs.current[i] = el; }}>
-                <div className="carousel-card-inner">
-                  {it.img
-                    ? <img src={it.img} alt={it.caption || ""} loading="lazy" />
-                    : <div className="carousel-card-fallback" style={{ background: grad(i) }} />}
+        <div className="carousel-row">
+          {n > 1 && (
+            <button type="button" className="carousel-arrow carousel-arrow-left"
+              onClick={() => rotateRef.current(-1)} aria-label="Previous photo">
+              <ChevronLeft size={22} />
+            </button>
+          )}
+          <div className="carousel-scene" ref={sceneRef}>
+            <div className="carousel-ground" aria-hidden="true" />
+            <div className="carousel-ring" ref={ringRef}>
+              {list.map((it, i) => (
+                <div key={it.id ?? i} className="carousel-card"
+                  ref={(el) => { cardRefs.current[i] = el; }}>
+                  <div className="carousel-card-inner">
+                    {it.img
+                      ? <img src={it.img} alt={it.caption || ""} loading="lazy" />
+                      : <div className="carousel-card-fallback" style={{ background: grad(i) }} />}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
+          {n > 1 && (
+            <button type="button" className="carousel-arrow carousel-arrow-right"
+              onClick={() => rotateRef.current(1)} aria-label="Next photo">
+              <ChevronRight size={22} />
+            </button>
+          )}
         </div>
         <div className="carousel-caption" aria-live="polite">
-          {list[activeIdx]?.caption || " "}
+          {list[activeIdx]?.caption || " "}
         </div>
       </div>
       <style>{`
@@ -3252,9 +3281,22 @@ function Gallery({ items }) {
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           overflow: hidden; gap: clamp(14px, 3vh, 30px);
         }
+        .carousel-row {
+          width: min(96vw, 1300px); display: flex; align-items: center; justify-content: center;
+          gap: clamp(10px, 2.6vw, 30px);
+        }
+        .carousel-arrow {
+          flex: 0 0 auto; width: clamp(38px, 4.4vw, 54px); height: clamp(38px, 4.4vw, 54px);
+          border-radius: 50%; border: 1px solid rgba(255,255,255,.28);
+          background: rgba(20,17,24,.55); color: #fff; display: flex; align-items: center;
+          justify-content: center; cursor: pointer; backdrop-filter: blur(6px);
+          transition: background .2s ease, transform .15s ease; -webkit-tap-highlight-color: transparent;
+        }
+        .carousel-arrow:hover { background: rgba(255,255,255,.18); transform: scale(1.08); }
+        .carousel-arrow:active { transform: scale(0.94); }
         .carousel-scene {
-          position: relative; width: min(94vw, 1100px);
-          height: clamp(260px, 42vw, 440px);
+          position: relative; flex: 1 1 auto; min-width: 0; max-width: 1000px;
+          height: clamp(300px, 34vw, 480px);
           transform-style: preserve-3d; will-change: transform;
         }
         .carousel-ground {
@@ -3272,11 +3314,11 @@ function Gallery({ items }) {
           transform-style: preserve-3d;
         }
         .carousel-card-inner {
-          width: 100%; height: 100%; border-radius: 50%; overflow: hidden;
-          box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 0 0 3px rgba(255,255,255,.08) inset;
+          width: 100%; height: 100%; border-radius: 16px; overflow: hidden;
+          box-shadow: 0 14px 34px rgba(0,0,0,.38), 0 0 0 3px rgba(255,255,255,.08) inset;
           transition: transform .25s ease;
         }
-        .carousel-card:hover .carousel-card-inner { transform: scale(1.08); }
+        .carousel-card:hover .carousel-card-inner { transform: scale(1.05); }
         .carousel-card img, .carousel-card-fallback {
           width: 100%; height: 100%; object-fit: cover; display: block;
         }
@@ -3286,7 +3328,8 @@ function Gallery({ items }) {
           opacity: .92; padding: 0 16px;
         }
         @media (max-width: 640px) {
-          .carousel-scene { height: clamp(220px, 58vw, 320px); }
+          .carousel-scene { height: clamp(230px, 60vw, 340px); }
+          .carousel-arrow { width: 34px; height: 34px; }
         }
       `}</style>
     </div>
