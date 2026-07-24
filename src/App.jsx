@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl,
   subscribe, listSubscribers } from "./supabase";
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
@@ -13,7 +13,8 @@ import {
   ShoppingBag, Instagram, Facebook, MessageCircle, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
-  Sun, Moon, ChevronDown, Mail, Send, CalendarDays, LayoutGrid, Info, Search
+  Sun, Moon, ChevronDown, Mail, Send, CalendarDays, LayoutGrid, Info, Search,
+  Settings, Camera
 } from "lucide-react";
 
 /* ============================================================
@@ -64,8 +65,10 @@ const NAV = [
   },
   {
     label: "More", children: [
+      { id: "new-here", label: "New here?" },
       { id: "announcements", label: "Announcements" },
       { id: "connect", label: "Connect" },
+      { id: "instagram", label: "Instagram" },
       { id: "merch", label: "Merch", external: true, href: MERCH_URL },
     ],
   },
@@ -278,19 +281,40 @@ const DUR = {
   hero: 1100,
 };
 
+// ── Display settings (site-wide toggles, independent of OS preferences) ──
+// A visitor's "reduce motion" choice made *on this site* (via the settings
+// menu in the nav) rather than in their OS. Provided once near the root of
+// App() and read everywhere via useMotionPrefs()/useReducedMotion() below,
+// so flipping the master switch turns off every decorative animation
+// (rosary spin, hero intro, lantern sway, parallax, ripple, carousel spin)
+// without touching every component individually — each of those already
+// calls useReducedMotion(), which now also honors this. glowOff and
+// rippleOff are finer switches for people who want most motion but not
+// those two specific effects.
+const MotionPrefsContext = createContext({
+  motionOff: false, setMotionOff: () => {},
+  glowOff: false, setGlowOff: () => {},
+  rippleOff: false, setRippleOff: () => {},
+});
+function useMotionPrefs() {
+  return useContext(MotionPrefsContext);
+}
+
 // Single source of truth for the reduced-motion preference, kept live so
-// the site responds if the user changes it mid-session.
+// the site responds if the user changes it mid-session — combines the OS
+// setting with the visitor's manual in-site "Reduce motion" toggle.
 function useReducedMotion() {
-  const [reduced, setReduced] = useState(false);
+  const [osReduced, setOsReduced] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     if (!mq) return;
-    setReduced(mq.matches);
-    const on = (e) => setReduced(e.matches);
+    setOsReduced(mq.matches);
+    const on = (e) => setOsReduced(e.matches);
     mq.addEventListener?.("change", on);
     return () => mq.removeEventListener?.("change", on);
   }, []);
-  return reduced;
+  const { motionOff } = useContext(MotionPrefsContext);
+  return osReduced || motionOff;
 }
 
 // Drives the hero's scroll-reactive neon glow (logo, arch, rosette accent)
@@ -868,40 +892,6 @@ function Parallax({ speed = 0.15, children, style, float = false, ...rest }) {
 }
 
 /* ── Botanical accents ──────────────────────────────────────────────── */
-function Blossom({ size = 18, color = PINK, cx = 0, cy = 0, rot = 0 }) {
-  const petals = [];
-  for (let i = 0; i < 5; i++) {
-    const a = (i * 72 - 90) * (Math.PI / 180);
-    const px = cx + Math.cos(a) * size * 0.28, py = cy + Math.sin(a) * size * 0.28;
-    petals.push(
-      <ellipse key={i} cx={px} cy={py} rx={size * 0.26} ry={size * 0.34}
-        transform={`rotate(${i * 72 + rot} ${px} ${py})`} fill={color} opacity="0.9" />
-    );
-  }
-  return <g>{petals}<circle cx={cx} cy={cy} r={size * 0.11} fill={GOLD} opacity="0.95" /></g>;
-}
-
-function SakuraBranch({ width = 260, flip = false, opacity = 0.9, style }) {
-  return (
-    <svg width={width} height={width * 0.62} viewBox="0 0 260 160" aria-hidden="true"
-      style={{ transform: flip ? "scaleX(-1)" : "none", opacity, display: "block", ...style }}>
-      <path d="M-5 26 C60 34, 96 52, 132 78 C158 96, 190 106, 232 106"
-        stroke="#5a4636" strokeWidth="4" fill="none" strokeLinecap="round" />
-      <path d="M60 33 C74 46, 82 60, 84 76" stroke="#5a4636" strokeWidth="2.6" fill="none" strokeLinecap="round" />
-      <path d="M132 78 C138 62, 150 50, 168 44" stroke="#5a4636" strokeWidth="2.6" fill="none" strokeLinecap="round" />
-      <path d="M186 100 C196 86, 208 78, 224 74" stroke="#5a4636" strokeWidth="2.2" fill="none" strokeLinecap="round" />
-      <Blossom cx={26} cy={28} size={22} color={PINK} rot={10} />
-      <Blossom cx={70} cy={36} size={17} color="#e8c4d4" rot={30} />
-      <Blossom cx={86} cy={78} size={19} color={MAUVE} rot={-15} />
-      <Blossom cx={134} cy={80} size={22} color={PINK} rot={22} />
-      <Blossom cx={168} cy={44} size={18} color="#e8c4d4" rot={-8} />
-      <Blossom cx={192} cy={100} size={16} color={MAUVE} rot={40} />
-      <Blossom cx={226} cy={72} size={20} color={PINK} rot={-25} />
-      <Blossom cx={236} cy={108} size={15} color="#e8c4d4" rot={12} />
-    </svg>
-  );
-}
-
 function CrescentAccent({ size = 150, color = GOLD, opacity = 0.5, style }) {
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true"
@@ -982,12 +972,6 @@ function StatsBand({ stats }) {
           <Rosette points={16} skip={7} size={230} color={GOLD} opacity={0.10} />
         </ScrollSpin>
       </div>
-      <Parallax speed={0.25} float style={{ top: -30, left: -40, opacity: .5 }}>
-        <SakuraBranch width={240} opacity={.55} />
-      </Parallax>
-      <Parallax speed={-0.2} float style={{ bottom: -20, right: -30, opacity: .5 }}>
-        <SakuraBranch width={220} flip opacity={.55} />
-      </Parallax>
       <Parallax speed={0.4} float style={{ top: 30, right: "18%" }}>
         <CrescentAccent size={90} opacity={.28} />
       </Parallax>
@@ -1067,6 +1051,10 @@ const seed = {
                 body: "Ways to grow, give back, and connect throughout the year." },
     connect:  { eyebrow: "Connect", title: "Find your people",
                 body: "Join the group chats, follow along, and support the community." },
+    newHere:  { eyebrow: "Getting started", title: "New here?",
+                body: "First time hearing about MSA, or just landed on campus? Start with our student guide — it walks through everything from finding prayer spaces to jumping into your first event." },
+    instagram: { eyebrow: "Follow along", title: "On Instagram",
+                body: "Event recaps, reminders, and behind-the-scenes moments." },
   },
   // ── About pillars ─────────────────────────────────────────────────────
   about: {
@@ -1099,6 +1087,11 @@ const seed = {
     hours: "Open for all five daily prayers · Jummah every Friday",
     body: "The Islamic House is the heart of Muslim student life at UW. It hosts daily congregational prayers, Friday Jummah, Ramadan iftars and taraweeh, and community gatherings all year round. MSA works hand in hand with the House — many of our events happen here.\n\nEveryone is welcome, whether you're coming for prayer, for iftar, or just to find your feet on campus.",
     donateUrl: "https://www.zeffy.com/en-US/donation-form/0b12beb3-2da5-4c6b-87b9-cfc84cf47e6a",
+    // A future/renovation photo of the building, shown above the "Visit"
+    // card — separate from the `photos` gallery below since it's meant to
+    // be a single featured image, not a grid entry. Empty by default;
+    // admins add it from the Islamic House tab.
+    futureImage: "",
     features: [
       { id: 1, title: "Daily prayers", text: "All five prayers in congregation, every day." },
       { id: 2, title: "Jummah", text: "Two khutbahs each Friday — check the prayer section for times." },
@@ -1106,6 +1099,20 @@ const seed = {
       { id: 4, title: "Community space", text: "A place to study, rest, and gather between classes." },
     ],
     photos: [],
+  },
+  // ── "New here?" — a short pointer to the Muslim Student Guide for
+  // newcomers. Text/heading come from sections.newHere above; the link
+  // itself lives here since it's a single URL, not a copy field.
+  newHere: {
+    linkLabel: "Read the Muslim Student Guide",
+    href: "",
+  },
+  // ── Instagram — admin pastes individual post URLs (same pattern as the
+  // photo gallery); each renders via Instagram's own oEmbed widget, no API
+  // keys required. `handle` powers the "Follow us" link/fallback.
+  instagram: {
+    handle: "",
+    posts: [],
   },
   // ── Contact ──────────────────────────────────────────────────────────
   contact: {
@@ -1352,6 +1359,28 @@ export default function App() {
     try { localStorage.setItem("msa-petals", petals ? "on" : "off"); } catch {}
   }, [petals]);
 
+  // Display settings (Nav's gear menu) — persisted, provided to the whole
+  // tree below via MotionPrefsContext. See useReducedMotion()/useMotionPrefs()
+  // near the top of the file for how these actually take effect.
+  const boolPref = (key, fallback) => {
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved !== null) return saved === "on";
+    } catch {}
+    return fallback;
+  };
+  const [motionOff, setMotionOff] = useState(() => boolPref("msa-motion-off", false));
+  const [glowOff, setGlowOff] = useState(() => boolPref("msa-glow-off", false));
+  const [rippleOff, setRippleOff] = useState(() => boolPref("msa-ripple-off", false));
+  useEffect(() => { try { localStorage.setItem("msa-motion-off", motionOff ? "on" : "off"); } catch {} }, [motionOff]);
+  useEffect(() => { try { localStorage.setItem("msa-glow-off", glowOff ? "on" : "off"); } catch {} }, [glowOff]);
+  useEffect(() => { try { localStorage.setItem("msa-ripple-off", rippleOff ? "on" : "off"); } catch {} }, [rippleOff]);
+  const motionPrefs = { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff };
+  // App() renders the Provider that everything below it reads from, so it
+  // can't consume its own context — combine its one direct use (RippleField)
+  // with the local motionOff state by hand instead.
+  const effectiveReduced = reducedMotion || motionOff;
+
   // On load: pull saved content from Supabase (fall back to seed if empty),
   // and check whether an admin session is already active.
   // try/catch/finally is load-bearing here: without it, a thrown error from
@@ -1414,11 +1443,12 @@ export default function App() {
   }, [loaded]);
 
   return (
+    <MotionPrefsContext.Provider value={motionPrefs}>
     <div data-theme={dark ? "dark" : "light"}
       style={{ fontFamily: "'Poppins', system-ui, sans-serif",
         color: "var(--text)", background: "var(--bg)", minHeight: "100vh" }}>
       <StyleTag />
-      <RippleField reduced={reducedMotion} />
+      <RippleField reduced={effectiveReduced || rippleOff} />
       <HeroCurtain progress={loadProgress} onDone={() => setCurtainDone(true)} />
       {petals && <SakuraWind dark={dark} />}
       <AnnouncementBar bar={data.bar} onNav={scrollTo} />
@@ -1431,6 +1461,7 @@ export default function App() {
         data={data} onNav={scrollTo} />
       <main>
         <HomeSection data={data} onNav={scrollTo} curtainDone={curtainDone} />
+        <NewHereSection data={data} />
         <AnnouncementsSection data={data} />
         <DonateSection data={data} />
         <AboutSection data={data} />
@@ -1442,6 +1473,7 @@ export default function App() {
         <StatsBand stats={data.stats || []} />
         <ProgramsSection data={data} />
         <BoardSection data={data} />
+        <InstagramSection data={data} />
         <ConnectSection data={data} />
         <MailingList data={data} />
       </main>
@@ -1455,6 +1487,7 @@ export default function App() {
         />
       )}
     </div>
+    </MotionPrefsContext.Provider>
   );
 }
 
@@ -1710,8 +1743,78 @@ function StyleTag() {
   );
 }
 
+/* ── Display settings menu ─────────────────────────────────────────────
+   One place for visitors to dial back motion/effects without touching OS
+   settings: a master "Reduce motion" switch (feeds straight into
+   useReducedMotion(), so it turns off every decorative animation site-wide
+   — rosary spin, hero intro, lantern sway, parallax, the ripple, the
+   carousel spin), plus two finer switches for the rosary wheel's neon glow
+   and the hover ripple specifically, for anyone who wants most motion but
+   not those two. Choices persist across visits via MotionPrefsContext. */
+function SettingsMenu() {
+  const { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff } = useMotionPrefs();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const ToggleRow = ({ label, hint, checked, onToggle }) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+      gap: 14, padding: "9px 2px" }}>
+      <div>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text)" }}>{label}</div>
+        {hint && <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 1, lineHeight: 1.4 }}>{hint}</div>}
+      </div>
+      <button type="button" role="switch" aria-checked={checked} aria-label={label}
+        onClick={() => onToggle(!checked)}
+        style={{ flex: "0 0 auto", width: 38, height: 22, borderRadius: 999, position: "relative",
+          border: "none", cursor: "pointer", padding: 0,
+          background: checked ? GOLD : "var(--border-strong)",
+          transition: `background ${DUR.fast}ms ${EASE.out}` }}>
+        <span aria-hidden="true" style={{ position: "absolute", top: 2, left: checked ? 18 : 2,
+          width: 18, height: 18, borderRadius: "50%", background: "#fff",
+          boxShadow: "0 1px 3px rgba(0,0,0,.3)", transition: `left ${DUR.fast}ms ${EASE.out}` }} />
+      </button>
+    </div>
+  );
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <button className="btn" onClick={() => setOpen((o) => !o)} aria-label="Display settings"
+        aria-expanded={open} aria-haspopup="true" title="Display settings" style={iconBtn}>
+        <Settings size={16} color="var(--accent)" />
+      </button>
+      {open && (
+        <div role="menu" style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, width: 268,
+          background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14,
+          boxShadow: "0 18px 40px rgba(0,0,0,.24)", padding: "8px 14px", zIndex: 60 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.2px", textTransform: "uppercase",
+            color: "var(--text-faint)", padding: "8px 2px 2px" }}>Display settings</div>
+          <ToggleRow label="Reduce motion" hint="Turns off spinning, parallax, and intro animations"
+            checked={motionOff} onToggle={setMotionOff} />
+          <ToggleRow label="Rosary glow" hint="Neon purple/gold glow on the home page medallion"
+            checked={!glowOff} onToggle={(v) => setGlowOff(!v)} />
+          <ToggleRow label="Hover ripple" hint="The outward wave when you click or hover"
+            checked={!rippleOff} onToggle={(v) => setRippleOff(!v)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark,
   petals, onTogglePetals, onSearch }) {
+  const { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff } = useMotionPrefs();
   const [solid, setSolid] = useState(false);
   const [progress, setProgress] = useState(0);
   const [openMenu, setOpenMenu] = useState(null);  // which dropdown is open
@@ -1875,6 +1978,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
               {dark ? <Sun size={16} color="var(--accent)" /> : <Moon size={16} color="var(--accent)" />}
             </span>
           </button>
+          <SettingsMenu />
           <button className="btn" onClick={onAdmin} aria-label="Admin login" style={iconBtn}>
             <Lock size={16} color="var(--accent)" />
           </button>
@@ -1967,6 +2071,19 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             <PetalIcon size={15} color="var(--accent)" />
             {petals ? "Petals: on" : "Petals: off"}
           </button>
+          <div style={{ height: 1, background: "var(--border)", margin: "6px 0" }} />
+          <button onClick={() => setMotionOff((v) => !v)} style={mobLink} aria-pressed={motionOff}>
+            <Settings size={15} color="var(--accent)" />
+            {motionOff ? "Reduce motion: on" : "Reduce motion: off"}
+          </button>
+          <button onClick={() => setGlowOff((v) => !v)} style={mobLink} aria-pressed={glowOff}>
+            <Settings size={15} color="var(--accent)" />
+            {glowOff ? "Rosary glow: off" : "Rosary glow: on"}
+          </button>
+          <button onClick={() => setRippleOff((v) => !v)} style={mobLink} aria-pressed={rippleOff}>
+            <Settings size={15} color="var(--accent)" />
+            {rippleOff ? "Hover ripple: off" : "Hover ripple: on"}
+          </button>
           <button onClick={() => { setMenuOpen(false); onAdmin(); }} style={mobLink}>
             <Lock size={15} /> Admin
           </button>
@@ -2015,44 +2132,26 @@ function Band({ children, id, alt, style, divider, lattice, decor, floats, roset
   light, lightTone = "violet", lightAt = "top-left" }) {
   return (
     <section id={id} style={{ position: "relative", overflow: "hidden",
-      padding: "92px 20px", background: alt ? "var(--surface)" : "transparent", ...style }}>
+      padding: "68px 20px", background: alt ? "var(--surface)" : "transparent", ...style }}>
       {light && <SectionLight tone={lightTone} placement={lightAt} />}
       {lattice && <StarLatticeBg color="var(--lattice)" opacity={alt ? 0.055 : 0.05} unit={66} />}
       {rosettes && <EdgeRosettes arrangement={rosettes} />}
       {floats}
       {/* Parallax botanicals framing the section. `decor` picks the arrangement. */}
       {decor === "left" && (
-        <>
-          <Parallax speed={0.22} float style={{ top: -40, left: -70 }}>
-            <SakuraBranch width={230} opacity={.16} />
-          </Parallax>
-          <Parallax speed={-0.16} float style={{ bottom: -30, right: -60 }}>
-            <CrescentAccent size={130} opacity={.09} />
-          </Parallax>
-        </>
+        <Parallax speed={-0.16} float style={{ bottom: -30, right: -60 }}>
+          <CrescentAccent size={130} opacity={.09} />
+        </Parallax>
       )}
       {decor === "right" && (
-        <>
-          <Parallax speed={0.2} float style={{ top: -50, right: -70 }}>
-            <SakuraBranch width={230} flip opacity={.16} />
-          </Parallax>
-          <Parallax speed={-0.18} float style={{ bottom: 10, left: -40 }}>
-            <Lantern size={80} opacity={.12} />
-          </Parallax>
-        </>
+        <Parallax speed={-0.18} float style={{ bottom: 10, left: -40 }}>
+          <Lantern size={80} opacity={.12} />
+        </Parallax>
       )}
       {decor === "both" && (
-        <>
-          <Parallax speed={0.24} float style={{ top: -46, left: -70 }}>
-            <SakuraBranch width={210} opacity={.15} />
-          </Parallax>
-          <Parallax speed={0.18} float style={{ top: -30, right: -60 }}>
-            <SakuraBranch width={210} flip opacity={.15} />
-          </Parallax>
-          <Parallax speed={-0.2} float style={{ bottom: -10, left: "45%" }}>
-            <CrescentAccent size={100} opacity={.08} />
-          </Parallax>
-        </>
+        <Parallax speed={-0.2} float style={{ bottom: -10, left: "45%" }}>
+          <CrescentAccent size={100} opacity={.08} />
+        </Parallax>
       )}
       {divider && (
         <div style={{ position: "relative", zIndex: 1, maxWidth: 1200, margin: "-40px auto 52px", opacity: .55 }}>
@@ -2318,12 +2417,15 @@ function RippleField({ reduced }) {
 
     const isSmall = () => window.innerWidth < 640;
     const RING_COLORS = [PURPLE, GOLD];
-    const RIPPLE_LIFE = 110; // frames
+    const RIPPLE_LIFE = 60; // frames
     const WAVE_SPEED = 4;
-    const RING_SPACING = 34, RING_TRAIL = 3;
+    const RING_SPACING = 34, RING_TRAIL = 2;
 
     let SPACING = isSmall() ? 34 : 26;
-    const DOT_SIZE = 2, RIPPLE_RADIUS = 320;
+    // Shrunk from 320 — the wave used to travel nearly a third of the
+    // screen; now it fades out as a smaller, quicker pulse right around
+    // the cursor/tap point instead of sweeping across half the viewport.
+    const DOT_SIZE = 2, RIPPLE_RADIUS = 150;
 
     let w = 0, h = 0, cols = 0, rows = 0;
     let raf = 0, clock = 0, running = false;
@@ -2411,6 +2513,7 @@ function RippleField({ reduced }) {
 
 function HomeSection({ data, onNav, curtainDone }) {
   const reduced = useReducedMotion();
+  const { glowOff } = useMotionPrefs();
   const sectionRef = useRef(null);
   const stageRef = useRef(null);
   const glowARef = useRef(null);
@@ -2536,16 +2639,22 @@ function HomeSection({ data, onNav, curtainDone }) {
             display: "grid", placeItems: "center",
           }}>
             {/* glow layer — a blurred conic gradient rotating with scroll,
-                so purple/gold trade places around the mark as you scroll */}
-            <div aria-hidden="true" style={{
-              position: "absolute", inset: "-30%", borderRadius: "50%",
-              background: `conic-gradient(from var(--fx-angle, 0deg), ${NEON_PURPLE}, ${NEON_GOLD}, ${NEON_PURPLE})`,
-              filter: "blur(34px)", opacity: 0.6, mixBlendMode: "screen",
-            }} />
+                so purple/gold trade places around the mark as you scroll.
+                Skipped entirely when the "Rosary glow" display setting is
+                off (Nav's settings menu / MotionPrefsContext). */}
+            {!glowOff && (
+              <div aria-hidden="true" style={{
+                position: "absolute", inset: "-30%", borderRadius: "50%",
+                background: `conic-gradient(from var(--fx-angle, 0deg), ${NEON_PURPLE}, ${NEON_GOLD}, ${NEON_PURPLE})`,
+                filter: "blur(34px)", opacity: 0.6, mixBlendMode: "screen",
+              }} />
+            )}
             <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
               decoding="async"
               style={{ position: "relative", width: "82%", height: "82%", objectFit: "contain",
-                filter: `drop-shadow(0 8px 26px rgba(0,0,0,.4)) drop-shadow(0 0 22px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))` }} />
+                filter: glowOff
+                  ? "drop-shadow(0 8px 26px rgba(0,0,0,.4))"
+                  : `drop-shadow(0 8px 26px rgba(0,0,0,.4)) drop-shadow(0 0 22px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))` }} />
           </div>
         </div>
 
@@ -3165,8 +3274,13 @@ function Gallery({ items }) {
         const eff = ((a - angle) * Math.PI) / 180;
         const c = Math.cos(eff);
         const depth = (c + 1) / 2; // 0 = far side, 1 = front-and-center
+        // Opacity-only dimming — a per-card `filter: brightness()` write
+        // every frame forced a much heavier compositing cost (each card
+        // becomes its own filter layer that has to be re-rendered on every
+        // tick) for a subtlety most people never consciously notice next to
+        // the opacity fade. Dropping it was one of the bigger line items in
+        // the mobile-lag pass.
         card.style.opacity = (0.32 + depth * 0.68).toFixed(2);
-        card.style.filter = `brightness(${(0.7 + depth * 0.4).toFixed(2)})`;
         card.style.zIndex = String(Math.round(depth * 100));
         if (c > bestCos) { bestCos = c; bestI = i; }
       });
@@ -3256,7 +3370,7 @@ function Gallery({ items }) {
                   ref={(el) => { cardRefs.current[i] = el; }}>
                   <div className="carousel-card-inner">
                     {it.img
-                      ? <img src={it.img} alt={it.caption || ""} loading="lazy" />
+                      ? <img src={it.img} alt={it.caption || ""} loading="lazy" decoding="async" />
                       : <div className="carousel-card-fallback" style={{ background: grad(i) }} />}
                   </div>
                 </div>
@@ -3288,8 +3402,8 @@ function Gallery({ items }) {
         .carousel-arrow {
           flex: 0 0 auto; width: clamp(38px, 4.4vw, 54px); height: clamp(38px, 4.4vw, 54px);
           border-radius: 50%; border: 1px solid rgba(255,255,255,.28);
-          background: rgba(20,17,24,.55); color: #fff; display: flex; align-items: center;
-          justify-content: center; cursor: pointer; backdrop-filter: blur(6px);
+          background: rgba(20,17,24,.72); color: #fff; display: flex; align-items: center;
+          justify-content: center; cursor: pointer;
           transition: background .2s ease, transform .15s ease; -webkit-tap-highlight-color: transparent;
         }
         .carousel-arrow:hover { background: rgba(255,255,255,.18); transform: scale(1.08); }
@@ -4539,56 +4653,81 @@ function IslamicHouseSection({ data }) {
           </div>
         </div>
 
-        {/* Info card */}
-        <Reveal variant="right" distance={26} delay={140} duration={DUR.slow}>
-          <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-            <div style={{ background: GRAD_DEEP, color: "#fff", padding: "20px 22px",
-              position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", right: -26, top: -26, opacity: .18 }}>
-                <Star8 size={110} color="#fff" /></div>
-              <div style={{ position: "relative" }}>
-                <div style={{ fontSize: 12, letterSpacing: "1.5px", textTransform: "uppercase",
-                  color: "rgba(255,255,255,.72)" }}>Visit</div>
-                <div style={{ fontSize: 20, fontWeight: 700, marginTop: 2 }}>Islamic House</div>
+        {/* Right column: future building photo on top, "Visit" info card
+            underneath. The photo slot always renders — as the real image
+            once an admin adds one (Islamic House admin tab), or as a quiet
+            placeholder template until then — so the space is reserved and
+            the layout doesn't jump when a photo eventually gets added. */}
+        <div style={{ display: "grid", gap: 20 }}>
+          <Reveal variant="right" distance={26} delay={80} duration={DUR.slow}>
+            {h.futureImage ? (
+              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
+                aspectRatio: "4 / 3" }}>
+                <img src={h.futureImage} alt="Future Islamic House building" loading="lazy"
+                  decoding="async"
+                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              </div>
+            ) : (
+              <div style={{ ...card, aspectRatio: "4 / 3", display: "grid", placeItems: "center",
+                gap: 8, textAlign: "center", padding: 20,
+                border: "1.5px dashed var(--border-strong)", background: "var(--surface-2)" }}>
+                <Camera size={26} color="var(--text-faint)" />
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-faint)" }}>
+                  Future building photo coming soon</div>
+              </div>
+            )}
+          </Reveal>
+
+          <Reveal variant="right" distance={26} delay={140} duration={DUR.slow}>
+            <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+              <div style={{ background: GRAD_DEEP, color: "#fff", padding: "20px 22px",
+                position: "relative", overflow: "hidden" }}>
+                <div style={{ position: "absolute", right: -26, top: -26, opacity: .18 }}>
+                  <Star8 size={110} color="#fff" /></div>
+                <div style={{ position: "relative" }}>
+                  <div style={{ fontSize: 12, letterSpacing: "1.5px", textTransform: "uppercase",
+                    color: "rgba(255,255,255,.72)" }}>Visit</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, marginTop: 2 }}>Islamic House</div>
+                </div>
+              </div>
+              <div style={{ marginTop: -1 }}>
+                <Muqarnas color={GOLD} height={14} cells={12} opacity={.85} />
+              </div>
+              <div style={{ padding: "18px 22px", display: "grid", gap: 14 }}>
+                {h.address && (
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <MapPin size={17} color="var(--accent)" style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ fontSize: 14, color: "var(--text-muted)", lineHeight: 1.55 }}>
+                      {h.address}</div>
+                  </div>
+                )}
+                {h.hours && (
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <Clock size={17} color="var(--accent)" style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ fontSize: 14, color: "var(--text-muted)", lineHeight: 1.55 }}>
+                      {h.hours}</div>
+                  </div>
+                )}
+                <div style={{ display: "grid", gap: 9, marginTop: 4 }}>
+                  {h.mapUrl && (
+                    <a className="btn" href={h.mapUrl} target="_blank" rel="noopener noreferrer"
+                      style={{ ...btnPurple, textDecoration: "none", textAlign: "center",
+                        display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+                      <MapPin size={15} /> Open in Maps
+                    </a>
+                  )}
+                  {h.donateUrl && (
+                    <a className="btn" href={h.donateUrl} target="_blank" rel="noopener noreferrer"
+                      style={{ ...btnGold, textDecoration: "none", textAlign: "center",
+                        display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+                      <Heart size={15} /> Support the House
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
-            <div style={{ marginTop: -1 }}>
-              <Muqarnas color={GOLD} height={14} cells={12} opacity={.85} />
-            </div>
-            <div style={{ padding: "18px 22px", display: "grid", gap: 14 }}>
-              {h.address && (
-                <div style={{ display: "flex", gap: 10 }}>
-                  <MapPin size={17} color="var(--accent)" style={{ flexShrink: 0, marginTop: 2 }} />
-                  <div style={{ fontSize: 14, color: "var(--text-muted)", lineHeight: 1.55 }}>
-                    {h.address}</div>
-                </div>
-              )}
-              {h.hours && (
-                <div style={{ display: "flex", gap: 10 }}>
-                  <Clock size={17} color="var(--accent)" style={{ flexShrink: 0, marginTop: 2 }} />
-                  <div style={{ fontSize: 14, color: "var(--text-muted)", lineHeight: 1.55 }}>
-                    {h.hours}</div>
-                </div>
-              )}
-              <div style={{ display: "grid", gap: 9, marginTop: 4 }}>
-                {h.mapUrl && (
-                  <a className="btn" href={h.mapUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ ...btnPurple, textDecoration: "none", textAlign: "center",
-                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
-                    <MapPin size={15} /> Open in Maps
-                  </a>
-                )}
-                {h.donateUrl && (
-                  <a className="btn" href={h.donateUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ ...btnGold, textDecoration: "none", textAlign: "center",
-                      display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
-                    <Heart size={15} /> Support the House
-                  </a>
-                )}
-              </div>
-            </div>
-          </div>
-        </Reveal>
+          </Reveal>
+        </div>
       </div>
 
       {/* Photos */}
@@ -4865,6 +5004,90 @@ function ProgramCard({ program: p }) {
   );
 }
 
+/* ---------- NEW HERE? ---------- */
+/* A short pointer for newcomers straight to the Muslim Student Guide.
+   Heading/body come from the standard section-copy system (admin: Section
+   text → "New here?"); the link itself is a single field on its own admin
+   tab, since it's a URL rather than editorial copy. */
+function NewHereSection({ data }) {
+  const nh = data.newHere || seed.newHere;
+  return (
+    <Band id="new-here" lattice rosettes="left" light lightTone="gold" lightAt="top-left">
+      <SectionCopy data={data} sectionKey="newHere" />
+      {nh.href && (
+        <Reveal variant="rise" distance={20}>
+          <a href={nh.href} target="_blank" rel="noopener noreferrer" className="btn lift"
+            style={{ display: "inline-flex", alignItems: "center", gap: 9,
+              padding: "13px 24px", borderRadius: 12, textDecoration: "none",
+              fontWeight: 700, fontSize: 15, color: "#2c2418",
+              background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)` }}>
+            <BookOpen size={17} /> {nh.linkLabel || "Read the guide"}
+          </a>
+        </Reveal>
+      )}
+    </Band>
+  );
+}
+
+/* ---------- INSTAGRAM ---------- */
+/* Admin pastes individual post URLs (same list-editor pattern as the photo
+   gallery); each renders as a genuinely embedded post via Instagram's own
+   oEmbed script (embed.js) — no API tokens, no backend. embed.js scans the
+   page once loaded for `.instagram-media` blockquotes and swaps each into
+   a real iframe; re-running `window.instgrm.Embeds.process()` is what
+   picks up any blockquote added after that initial scan (e.g. when an
+   admin adds a new post without a full page reload). */
+function InstagramEmbed({ url }) {
+  useEffect(() => {
+    const process = () => window.instgrm?.Embeds?.process();
+    if (window.instgrm) { process(); return; }
+    const existing = document.querySelector('script[src="https://www.instagram.com/embed.js"]');
+    if (existing) { existing.addEventListener("load", process, { once: true }); return; }
+    const script = document.createElement("script");
+    script.src = "https://www.instagram.com/embed.js";
+    script.async = true;
+    script.addEventListener("load", process, { once: true });
+    document.body.appendChild(script);
+  }, [url]);
+  return (
+    <blockquote className="instagram-media" data-instgrm-permalink={url} data-instgrm-version="14"
+      style={{ margin: "0 auto", maxWidth: 400, minWidth: 280, width: "100%", background: "#fff",
+        borderRadius: 14 }} />
+  );
+}
+
+function InstagramSection({ data }) {
+  const ig = data.instagram || seed.instagram;
+  const posts = (ig.posts || []).filter((p) => p.url);
+  const handle = (ig.handle || "").replace(/^@/, "").trim();
+  return (
+    <Band id="instagram" alt lattice rosettes="wide" light lightTone="rose" lightAt="top-right">
+      <SectionCopy data={data} sectionKey="instagram" />
+      {handle && (
+        <Reveal variant="rise" distance={16}>
+          <a href={`https://www.instagram.com/${handle}/`} target="_blank" rel="noopener noreferrer"
+            className="lift" style={{ display: "inline-flex", alignItems: "center", gap: 8,
+              marginBottom: 22, padding: "10px 18px", borderRadius: 999, textDecoration: "none",
+              fontWeight: 700, fontSize: 14, color: "#fff",
+              background: "linear-gradient(135deg,#833AB4,#FD1D1D,#FCB045)" }}>
+            <Instagram size={16} /> Follow @{handle}
+          </a>
+        </Reveal>
+      )}
+      {posts.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
+          gap: 20, justifyItems: "center" }}>
+          {posts.map((p, i) => (
+            <Reveal key={p.id ?? i} delay={i * 70} variant="rise" distance={20}>
+              <InstagramEmbed url={p.url} />
+            </Reveal>
+          ))}
+        </div>
+      )}
+    </Band>
+  );
+}
+
 /* ---------- CONNECT ---------- */
 function ConnectSection({ data }) {
   const c = data.contact || seed.contact;
@@ -5051,20 +5274,42 @@ function Footer({ onAdmin, data, onNav }) {
 
         {/* Bottom bar */}
         <div style={{ maxWidth: 1200, margin: "26px auto 0", paddingTop: 20,
-          borderTop: "1px solid rgba(255,255,255,.12)", display: "flex",
-          alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap",
-          fontSize: 12.5 }}>
-          <div>
-            © {new Date().getFullYear()} Muslim Students Association at the University of
-            Washington. A registered UW Registered Student Organization.
+          borderTop: "1px solid rgba(255,255,255,.12)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 16, flexWrap: "wrap", fontSize: 12.5 }}>
+            <div>
+              © {new Date().getFullYear()} Muslim Students Association at the University of
+              Washington. A registered UW Registered Student Organization.
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+              <a href={`mailto:${contact.email}`} className="footlink">{contact.email}</a>
+              <button onClick={onAdmin} className="footlink"
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                  fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <Lock size={13} /> Admin
+              </button>
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
-            <a href={`mailto:${contact.email}`} className="footlink">{contact.email}</a>
-            <button onClick={onAdmin} className="footlink"
-              style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
-                fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <Lock size={13} /> Admin
-            </button>
+
+          {/* Lighter secondary line: RSO disclaimer + non-profit note + policy links.
+              Kept visually quieter (smaller, dimmer) than the main copyright line above,
+              per the request that this read as a lighter footnote underneath it. */}
+          <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "8px 24px",
+            alignItems: "baseline", justifyContent: "space-between" }}>
+            <p style={{ margin: 0, maxWidth: 640, fontSize: 11, lineHeight: 1.6,
+              color: "rgba(255,255,255,.4)" }}>
+              MSA UW is a student-run, non-profit Registered Student Organization. Views and
+              activities are those of the organization and do not represent official
+              positions of the University of Washington.
+            </p>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <a href="https://www.washington.edu/online/privacy/" target="_blank"
+                rel="noopener noreferrer" className="footlink-faint">Privacy</a>
+              <a href="https://www.washington.edu/accessibility/" target="_blank"
+                rel="noopener noreferrer" className="footlink-faint">Accessibility</a>
+              <a href="https://www.washington.edu/civilrights/policies-and-guidance/statement-of-nondiscrimination/"
+                target="_blank" rel="noopener noreferrer" className="footlink-faint">Non-Discrimination</a>
+            </div>
           </div>
         </div>
       </div>
@@ -5074,6 +5319,9 @@ function Footer({ onAdmin, data, onNav }) {
                     transition: color ${DUR.fast}ms ${EASE.out}, transform ${DUR.fast}ms ${EASE.out};
                     display: inline-block; }
         .footlink:hover { color: ${GOLD}; transform: translateX(2px); }
+        .footlink-faint { color: rgba(255,255,255,.4); text-decoration: none; font-size: 11px;
+                    transition: color ${DUR.fast}ms ${EASE.out}; white-space: nowrap; }
+        .footlink-faint:hover { color: ${GOLD}; }
         .socialbtn { width: 38px; height: 38px; border-radius: 11px; display: grid;
                      place-items: center; color: rgba(255,255,255,.82);
                      background: rgba(255,255,255,.07);
@@ -5182,6 +5430,7 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
                 ["spaces", "Prayer spaces"], ["times", "Prayer times"],
                 ["events", "Events"], ["calendar", "Calendar"],
                 ["programs", "Programs"], ["stats", "Stats"],
+                ["newhere", "New here?"], ["instagram", "Instagram"],
                 ["links", "Links"], ["contact", "Contact"],
               ].map(([k, lbl]) => (
                 <button key={k} onClick={() => setTab(k)} style={{ display: "block", width: "100%",
@@ -5359,6 +5608,7 @@ function Editor({ tab, data, setData }) {
       ["islamicHouse", "Islamic House"], ["gallery", "Photo gallery"],
       ["sponsors", "Sponsors"], ["board", "Board members"], ["prayer", "Prayer"],
       ["events", "Events"], ["programs", "Programs"], ["connect", "Connect"],
+      ["newHere", "New here?"], ["instagram", "Instagram"],
     ];
     const sections = data.sections || {};
     const setSection = (key, patch) => up({
@@ -5680,6 +5930,10 @@ function Editor({ tab, data, setData }) {
           onChange={(e) => setH({ body: e.target.value })} /></Field>
         <Field label="Donation URL"><input style={inp} value={h.donateUrl || ""}
           onChange={(e) => setH({ donateUrl: e.target.value })} /></Field>
+        <Field label="Future building photo (shown above the 'Visit' card — optional)">
+          <ImageField label="Future building photo" value={h.futureImage || ""} folder="house"
+            onChange={(url) => setH({ futureImage: url })} />
+        </Field>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
           margin: "10px 0" }}>
@@ -5722,6 +5976,66 @@ function Editor({ tab, data, setData }) {
               <button onClick={() => setH({ photos: photos.filter((_, n) => n !== i) })}
                 style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
                 aria-label="Delete photo"><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+      </Section>
+    );
+  }
+
+  if (tab === "newhere") {
+    const nh = data.newHere || seed.newHere;
+    const setNh = (patch) => up({ newHere: { ...nh, ...patch } });
+    return (
+      <Section title="New here?">
+        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          The heading and paragraph are edited on the Section text tab (look for "New here?").
+          This tab is just the button underneath it.
+        </p>
+        <Field label="Button label">
+          <input style={inp} value={nh.linkLabel || ""}
+            onChange={(e) => setNh({ linkLabel: e.target.value })} />
+        </Field>
+        <Field label="Link URL (e.g. the Muslim Student Guide)">
+          <input style={inp} value={nh.href || ""} placeholder="https://…"
+            onChange={(e) => setNh({ href: e.target.value })} />
+        </Field>
+      </Section>
+    );
+  }
+
+  if (tab === "instagram") {
+    const ig = data.instagram || seed.instagram;
+    const setIg = (patch) => up({ instagram: { ...ig, ...patch } });
+    const posts = ig.posts || [];
+    const editP = (i, patch) => { const c = [...posts]; c[i] = { ...c[i], ...patch }; setIg({ posts: c }); };
+    return (
+      <Section title="Instagram">
+        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Paste the URL of any public Instagram post (copy the link from the "..." menu on the
+          post) — it renders as a real embedded post, no login required. The heading/intro text
+          is edited on the Section text tab.
+        </p>
+        <Field label={'Instagram handle (for the "Follow us" link)'}>
+          <input style={inp} value={ig.handle || ""} placeholder="msa_uw"
+            onChange={(e) => setIg({ handle: e.target.value })} />
+        </Field>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          margin: "16px 0 10px" }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Posts</h4>
+          <button onClick={() => setIg({ posts: [...posts, { id: Date.now(), url: "" }] })}
+            style={miniBtn}><Plus size={14} /> Add</button>
+        </div>
+        <div style={{ display: "grid", gap: 12 }}>
+          {posts.map((p, i) => (
+            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, display: "grid", gap: 8, position: "relative" }}>
+              <div><label style={lbl}>Post URL</label>
+                <input style={inpSm} value={p.url || ""} placeholder="https://www.instagram.com/p/…"
+                  onChange={(e) => editP(i, { url: e.target.value })} /></div>
+              <button onClick={() => setIg({ posts: posts.filter((_, n) => n !== i) })}
+                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
+                aria-label="Delete post"><Trash2 size={15} /></button>
             </div>
           ))}
         </div>
