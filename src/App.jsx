@@ -2618,12 +2618,14 @@ function HomeSection({ data, onNav, curtainDone }) {
             framing the logo, sized to enclose the rosette + CTA buttons */}
         <HeroArch box={archBox} />
 
-        {/* ── Logo mark — pulled out of normal flow and pinned to the exact
-            same center point as the rosary wheel above (top:5% + half its
-            560px size), so the two are always concentric regardless of
-            viewport height, and sized to sit comfortably inside the arch's
-            opening. A radiating neon purple/gold glow sits behind it, its
-            angle driven by useHeroScrollFX (see --fx-angle/--fx-mix on the
+        {/* ── Logo mark — pulled out of normal flow and pinned above the
+            rosary wheel's own center (rosette center is top:5% + half its
+            560px size = 5%+280px; the logo sits higher than that, at
+            5%+104px, so it reads as tucked up near the top of the arch's
+            opening rather than dead-center on the wheel — while still
+            leaving a comfortable gap from the arch's peak itself).
+            A radiating neon purple/gold glow sits behind it, its angle
+            driven by useHeroScrollFX (see --fx-angle/--fx-mix on the
             section), so the light visibly shifts position as you scroll —
             like catching the mark at a different angle.
             NOTE: the centering transform and the entrance scale/opacity
@@ -2631,7 +2633,7 @@ function HomeSection({ data, onNav, curtainDone }) {
             on separate elements — same reason as TiltWrap — otherwise the
             animation's own `transform` write would knock the mark off its
             centered position. ── */}
-        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 280px)",
+        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 104px)",
           transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
           <div className="hero-logo-mark" style={{
             position: "relative", opacity: 0,
