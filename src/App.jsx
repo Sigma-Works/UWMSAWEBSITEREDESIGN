@@ -2451,19 +2451,19 @@ function HomeSection({ data, onNav, curtainDone }) {
     tl.add(section.querySelector(".hero-logo-mark"), {
         opacity: [0, 1], scale: [0.85, 1], duration: 950, ease: "outExpo",
       }, 0)
-      .add(stage.querySelector(".hero-kicker"), {
-        opacity: [0, 1], translateY: [22, 0], duration: 650,
-      }, "-=150")
       .add(stage.querySelectorAll(".hero-word"), {
         opacity: [0, 1], translateY: [40, 0], filter: ["blur(8px)", "blur(0px)"],
         duration: 700, delay: stagger(75),
-      }, "-=50")
+      }, "-=250")
       .add(stage.querySelector(".hero-subtitle"), {
         opacity: [0, 1], translateY: [20, 0], duration: 600,
       }, "-=150")
       .add(stage.querySelector(".hero-cta"), {
         opacity: [0, 1], translateY: [24, 0], duration: 600, delay: stagger(90),
-      }, "-=200");
+      }, "-=200")
+      .add(stage.querySelector(".hero-kicker"), {
+        opacity: [0, 1], translateY: [16, 0], duration: 500,
+      }, "-=150");
 
     return () => tl?.revert?.();
   }, [curtainDone, reduced]);
@@ -2558,13 +2558,6 @@ function HomeSection({ data, onNav, curtainDone }) {
               kicker/headline below from jumping up. */}
           <div aria-hidden="true" style={{ height: "clamp(300px, 38vw, 400px)" }} />
 
-          <div className="hero-kicker" style={{ opacity: 0, display: "inline-flex", alignItems: "center", gap: 8,
-            padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.16)",
-            border: `1px solid rgba(201,182,136,.4)`, marginBottom: 24 }}>
-            <Star8 size={16} color={GOLD} /> <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: ".5px" }}>
-              {data.hero.kicker ?? seed.hero.kicker}</span>
-          </div>
-
           <h1 style={{ fontSize: "clamp(40px,7.4vw,86px)", fontWeight: 800, lineHeight: 1.02,
             letterSpacing: "-2.6px", margin: "0 0 24px" }}>
             {titleWords.map((w, i) => {
@@ -2601,6 +2594,19 @@ function HomeSection({ data, onNav, curtainDone }) {
               Learn More
             </button></Magnetic>
           </div>
+
+          {/* "Est. 1968" pill — now sits below the CTAs and doubles as a
+              link down to the About section instead of being purely
+              decorative. */}
+          <button className="hero-kicker btn" onClick={() => onNav("about")}
+            aria-label="Jump to the About section"
+            style={{ opacity: 0, display: "inline-flex", alignItems: "center", gap: 8,
+              padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.16)",
+              border: `1px solid rgba(201,182,136,.4)`, marginTop: 32, cursor: "pointer",
+              color: "inherit", font: "inherit" }}>
+            <Star8 size={16} color={GOLD} /> <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: ".5px" }}>
+              {data.hero.kicker ?? seed.hero.kicker}</span>
+          </button>
         </div>
         <ScrollCue onClick={() => onNav("gallery")} />
         {/* girih band along the base of the hero */}
