@@ -3032,22 +3032,18 @@ function PatternField() {
 }
 
 /* ── Gallery / "Moments from the year" ────────────────────────────────────
-   A maximally faithful port of https://codepen.io/KevinGutowski/pen/QwNZYzL
-   (a Motion conversion of a design by Jhey: https://codepen.io/jh3y/pen/VYZwOwd).
-   Structure, CSS, and scroll-linked JS mirror that reference 1:1 — same grid
-   + subgrid layout, same three "layer" groups, same scaler-photo shrink
-   animation, same offsets/easings for every scroll() call.
-
-   The ONE intentional deviation: the reference is a full-bleed page with
-   nothing centering or padding it, while our gallery normally lives inside
-   Band's centered, max-width:1200px column. Confining the effect to that
-   1160px-wide column made the "starts full-screen" phase fill only the
-   column, not the viewport — much weaker than the reference and the root
-   cause of it never quite looking right. So `.moments-wrap` breaks out to
-   full viewport width with the standard `left:50%; margin-left:-50vw`
-   technique, and the scroll JS measures against window.innerWidth/innerHeight
-   exactly like the reference does (rather than measuring some container's
-   own box, which was a workaround for a problem this fixes at the root). */
+   Ported from the reference (https://codepen.io/KevinGutowski/pen/QwNZYzL):
+   a real CSS Grid + subgrid layout — one "scaler" photo dead center that
+   starts full-bleed and shrinks to its natural grid-cell size as you
+   scroll, while three "layers" of photos (outer edges, inner columns,
+   center top/bottom) scale + fade in from the middle outward. Using an
+   actual grid (rather than one big auto-fit grid with hand-computed
+   fly-out offsets) is what makes the outward spread read correctly at
+   every viewport size — each photo already lives in its final position,
+   it just animates in from 0.
+   Tuned so the whole reveal is DONE by ~48% of the scroll runway — i.e.
+   photos spread out while the section is still comfortably on screen,
+   not only once you've nearly scrolled past it. */
 function Gallery({ items }) {
   const reduced = useReducedMotion();
   const wrapRef = useRef(null);
@@ -3087,7 +3083,8 @@ function Gallery({ items }) {
     if (reduced || !scalerItem) return;
     const wrap = wrapRef.current;
     const image = scalerImgRef.current;
-    if (!wrap || !image) return;
+    const sticky = wrap?.querySelector(".moments-sticky");
+    if (!wrap || !image || !sticky) return;
     let cancelled = false;
     const cleanups = [];
 
@@ -3097,26 +3094,29 @@ function Gallery({ items }) {
       if (cancelled) return;
 
       const layers = wrap.querySelectorAll(".moments-layer");
-      // Measured BEFORE any inline size is applied — this is the image's
-      // natural grid-cell size (driven purely by CSS: a 1fr column width
-      // paired with aspect-ratio:4/5), exactly like the reference measures
-      // `image.offsetWidth`/`offsetHeight` before animating.
       const naturalWidth = image.offsetWidth;
       const naturalHeight = image.offsetHeight;
-      // Matches the reference exactly: real viewport dimensions, not some
-      // container's box. Safe now that .moments-wrap is full viewport width.
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
+      // IMPORTANT: unlike the reference (a full-bleed page with no
+      // surrounding container), our gallery sits inside a padded,
+      // max-width content column. Using window.innerWidth/innerHeight
+      // here — like the reference does — made the "starts full-bleed"
+      // phase wider than its own sticky container, which then got clipped
+      // and looked broken. Sizing the start state to the sticky
+      // container's own box keeps it exactly filling the visible area,
+      // with nothing clipped.
+      const startWidth = sticky.clientWidth;
+      const startHeight = sticky.clientHeight;
 
-      // Scaler: shrinks from filling the viewport down to its natural grid
-      // size. Offsets/easings match the reference implementation exactly.
+      // Scaler: shrinks from filling the section down to its natural grid
+      // size. Offsets/easings match the reference implementation exactly
+      // (https://codepen.io/KevinGutowski/pen/QwNZYzL).
       cleanups.push(mscroll(
         manimate(image, {
-          width: [viewportWidth, naturalWidth],
-          height: [viewportHeight, naturalHeight],
+          width: [startWidth, naturalWidth],
+          height: [startHeight, naturalHeight],
         }, {
-          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },   // GSAP power2.inOut
-          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },  // GSAP power1.inOut
+          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },   // power2.inOut
+          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },  // power1.inOut
         }),
         { target: wrap, offset: ["start start", "80% end"] }
       ));
@@ -3133,7 +3133,7 @@ function Gallery({ items }) {
         cleanups.push(mscroll(
           manimate(layer, { opacity: [0, 0, 1] }, {
             offset: [0, 0.55, 1],
-            easing: cubicBezier(0.61, 1, 0.88, 1),  // GSAP sine.out
+            easing: cubicBezier(0.61, 1, 0.88, 1),  // sine.out
           }),
           { target: wrap, offset: ["start start", endOffset] }
         ));
@@ -3188,58 +3188,52 @@ function Gallery({ items }) {
           <div className="moments-layer">
             {layer3.map((it, i) => cell(it, i + 12, `l3-${i}`))}
           </div>
-          {/* The scaler is its own grid item (grid-area applied directly to
-              it, no extra wrapper) — matches the reference 1:1, where
-              `.scaler` is both the grid cell AND the relative-positioning
-              container for the animated <img>. */}
-          <div className="moments-scaler">
-            {scalerItem.img ? (
-              <img ref={scalerImgRef} src={scalerItem.img}
-                alt={scalerItem.caption || "Community moment"} />
-            ) : (
-              <div ref={scalerImgRef} style={{ width: "100%", height: "100%", background: grad(0) }} />
-            )}
-            {scalerItem.caption && (
-              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "26px 16px 14px",
-                background: "linear-gradient(to top, rgba(20,17,24,.65), transparent)",
-                color: "#fff", fontSize: 14, fontWeight: 700, borderRadius: "0 0 14px 14px", zIndex: 3 }}>
-                {scalerItem.caption}
-              </div>
-            )}
+          <div className="moments-scaler-cell">
+            <div className="moments-scaler">
+              {scalerItem.img ? (
+                <img ref={scalerImgRef} src={scalerItem.img}
+                  alt={scalerItem.caption || "Community moment"} />
+              ) : (
+                <div ref={scalerImgRef} style={{ width: "100%", height: "100%", background: grad(0) }} />
+              )}
+              {scalerItem.caption && (
+                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "26px 16px 14px",
+                  background: "linear-gradient(to top, rgba(20,17,24,.65), transparent)",
+                  color: "#fff", fontSize: 14, fontWeight: 700, borderRadius: "0 0 14px 14px" }}>
+                  {scalerItem.caption}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
       <style>{`
-        /* Full-bleed breakout: the reference is an edge-to-edge page; ours
-           sits inside Band's centered max-width:1200px column. This is the
-           standard trick to break a nested element out to full viewport
-           width regardless of how deeply it's nested in centered/padded
-           ancestors, so the scaler photo genuinely fills the screen like
-           the reference instead of just filling the content column. */
-        .moments-wrap {
-          position: relative;
-          left: 50%;
-          width: 100vw;
-          margin-left: -50vw;
-          min-height: 240vh;
-          --moments-gutter: 2rem;
-        }
-        @media (max-width: 600px) {
-          .moments-wrap { --moments-gutter: 1rem; }
-          .moments-grid { grid-template-columns: repeat(3, 1fr); --offset: -1; }
-          .moments-grid > .moments-layer:nth-of-type(1) { display: none; }
-        }
+        /* Runway/sticky-pin mechanics match the reference implementation
+           (https://codepen.io/KevinGutowski/pen/QwNZYzL) as closely as
+           possible: a tall spacer (main section:first-of-type's 240vh)
+           holding a sticky 100vh viewport (.content) while scrolling
+           through it drives the animation.
+           One deliberate difference: .moments-sticky must NOT have
+           overflow:hidden. The reference's .content can safely clip
+           because it's a full-bleed page section — width:100vw with
+           nothing constraining it. Ours lives inside a padded, max-width
+           content column, so the scaler photo's "starts big" phase is
+           sized to *this container's own box* (see the effect above,
+           which reads sticky.clientWidth/Height instead of
+           window.innerWidth/Height) rather than the true viewport — and
+           clipping it here would cut that phase off right as it's
+           supposed to be filling the space. */
+        .moments-wrap { position: relative; min-height: 240vh; }
         .moments-sticky {
-          position: sticky; top: 0; min-height: 100vh; width: 100vw;
+          position: sticky; top: 0; min-height: 100vh; width: 100%;
           display: flex; align-items: center; justify-content: center;
-          overflow: hidden;
         }
         .moments-grid {
           --offset: 0;
           --container-width: 1600px;
           --gap: clamp(10px, 7.35vw, 80px);
           width: var(--container-width);
-          max-width: calc(100% - (2 * var(--moments-gutter)));
+          max-width: calc(100% - 40px);
           display: grid;
           grid-template-columns: repeat(5, 1fr);
           grid-template-rows: repeat(3, auto);
@@ -3249,6 +3243,10 @@ function Gallery({ items }) {
           position: absolute;
           top: 50%; left: 50%;
           translate: -50% -50%;
+        }
+        @media (max-width: 640px) {
+          .moments-grid { grid-template-columns: repeat(3, 1fr); --offset: -1; }
+          .moments-grid > .moments-layer:nth-of-type(1) { display: none; }
         }
         .moments-grid > .moments-layer {
           display: grid; grid-column: 1 / -1; grid-row: 1 / -1;
@@ -3261,7 +3259,8 @@ function Gallery({ items }) {
         .moments-grid > .moments-layer:nth-of-type(3) div:first-of-type { grid-column: calc(3 + var(--offset)); grid-row: 1; }
         .moments-grid > .moments-layer:nth-of-type(3) div:last-of-type { grid-column: calc(3 + var(--offset)); grid-row: -1; }
         .moments-grid img { width: 100%; aspect-ratio: 4 / 5; object-fit: cover; border-radius: 14px; display: block; }
-        .moments-grid .moments-scaler { position: relative; grid-area: 2 / calc(3 + var(--offset)); z-index: 2; }
+        .moments-grid .moments-scaler-cell { position: relative; grid-area: 2 / calc(3 + var(--offset)); }
+        .moments-scaler { z-index: 2; width: 100%; height: 100%; position: relative; }
         .moments-scaler img, .moments-scaler > div {
           position: absolute; top: 50%; left: 50%; translate: -50% -50%;
           object-fit: cover; border-radius: 14px; width: 100%; height: 100%;
@@ -3270,7 +3269,6 @@ function Gallery({ items }) {
     </div>
   );
 }
-
 
 
 /* ---------- PRAYER ---------- */
