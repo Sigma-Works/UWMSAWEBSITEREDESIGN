@@ -2621,7 +2621,7 @@ function HomeSection({ data, onNav, curtainDone }) {
         {/* ── Logo mark — pulled out of normal flow and pinned above the
             rosary wheel's own center (rosette center is top:5% + half its
             560px size = 5%+280px; the logo sits higher than that, at
-            5%+200px, so it reads as tucked up near the top of the arch's
+            5%+104px, so it reads as tucked up near the top of the arch's
             opening rather than dead-center on the wheel — while still
             leaving a comfortable gap from the arch's peak itself).
             A radiating neon purple/gold glow sits behind it, its angle
@@ -2633,7 +2633,7 @@ function HomeSection({ data, onNav, curtainDone }) {
             on separate elements — same reason as TiltWrap — otherwise the
             animation's own `transform` write would knock the mark off its
             centered position. ── */}
-        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 200px)",
+        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 104px)",
           transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
           <div className="hero-logo-mark" style={{
             position: "relative", opacity: 0,
