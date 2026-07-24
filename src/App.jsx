@@ -1279,8 +1279,15 @@ export default function App() {
   // ~90% while we wait on Supabase, then sprints to 100 once `loaded`
   // actually flips true below. Not a fixed timer — genuinely tied to
   // whether the content has arrived.
+  // Safety net: if `loaded` never fires (offline, Supabase unreachable, a
+  // thrown error somewhere upstream, whatever) this used to leave the
+  // curtain stuck forever around 90%, since it never had a reason to
+  // reach 100. After MAX_WAIT it forces completion regardless, so a
+  // failed data fetch degrades to "site loads with seed content" instead
+  // of "site never loads" — the loading screen no longer blocks the site.
   const [loadProgress, setLoadProgress] = useState(0);
   useEffect(() => {
+    const MAX_WAIT = 4000;
     let raf = 0;
     const start = performance.now();
     const tick = (t) => {
@@ -1288,8 +1295,9 @@ export default function App() {
       let finished = false;
       setLoadProgress((p) => {
         if (p >= 100) { finished = true; return 100; }
-        const target = loaded ? 100 : 90 * (1 - Math.exp(-elapsed / 900));
-        return Math.min(100, p + (target - p) * (loaded ? 0.15 : 0.1));
+        const forceDone = loaded || elapsed > MAX_WAIT;
+        const target = forceDone ? 100 : 90 * (1 - Math.exp(-elapsed / 900));
+        return Math.min(100, p + (target - p) * (forceDone ? 0.15 : 0.1));
       });
       if (!finished) raf = requestAnimationFrame(tick);
     };
@@ -1342,18 +1350,34 @@ export default function App() {
 
   // On load: pull saved content from Supabase (fall back to seed if empty),
   // and check whether an admin session is already active.
+  // try/catch/finally is load-bearing here: without it, a thrown error from
+  // loadContent()/getSession() (offline, Supabase misconfigured/unreachable,
+  // etc.) meant setLoaded(true) never ran — and since the loading screen's
+  // dismissal is tied to `loaded`, the whole site got stuck behind the
+  // curtain forever instead of just falling back to the seed content.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const remote = await loadContent();
-      if (!cancelled && remote) setData(mergeContent(seed, remote));
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!cancelled) { setIsAdmin(!!session); setLoaded(true); }
+      try {
+        const remote = await loadContent();
+        if (!cancelled && remote) setData(mergeContent(seed, remote));
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!cancelled) setIsAdmin(!!session);
+      } catch (err) {
+        console.warn("Content/session load failed — continuing with seed content.", err);
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
     })();
     // keep isAdmin in sync if the session changes (login/logout/expiry)
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setIsAdmin(!!session);
-    });
+    let sub;
+    try {
+      sub = supabase.auth.onAuthStateChange((_e, session) => {
+        setIsAdmin(!!session);
+      }).data;
+    } catch (err) {
+      console.warn("Auth state listener failed to attach.", err);
+    }
     return () => { cancelled = true; sub?.subscription?.unsubscribe(); };
   }, []);
 
