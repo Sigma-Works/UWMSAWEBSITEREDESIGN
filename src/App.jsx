@@ -1274,32 +1274,36 @@ export default function App() {
   // Curtain-up moment before the hero animates in — see HeroCurtain below.
   const [curtainDone, setCurtainDone] = useState(false);
 
-  // Real load progress (0-100) for the loading screen's logo fill — a
-  // synthetic ramp (so there's always visible motion) that eases toward
-  // ~90% while we wait on Supabase, then sprints to 100 once `loaded`
-  // actually flips true below. Not a fixed timer — genuinely tied to
-  // whether the content has arrived.
-  // Safety net: if `loaded` never fires (offline, Supabase unreachable, a
-  // thrown error somewhere upstream, whatever) this used to leave the
-  // curtain stuck forever around 90%, since it never had a reason to
-  // reach 100. After MAX_WAIT it forces completion regardless, so a
-  // failed data fetch degrades to "site loads with seed content" instead
-  // of "site never loads" — the loading screen no longer blocks the site.
+  // Real load progress (0-100) for the loading screen's logo fill.
+  //
+  // Found and fixed a real bug here: the previous version computed each
+  // frame as `p + (target - p) * factor` — an asymptotic "ease toward a
+  // target" formula that, by construction, only ever gets CLOSER to 100,
+  // never mathematically reaches it. Once the remaining gap got small
+  // enough, adding a fraction of it to a value already near 100 fell below
+  // floating-point precision and simply stopped changing — p would get
+  // stuck at something like 99.9999999999998 forever. Since the curtain's
+  // dismissal check is `progress >= 100`, that value never satisfied it,
+  // so the site was stuck behind the loading screen on EVERY load, not
+  // just failed ones — this is what was actually still broken.
+  // This version recomputes a plain linear percentage fresh from elapsed
+  // time each frame (no compounding, no asymptote), and snaps straight to
+  // the literal integer 100 — not an approximation of it — the instant
+  // either the real content has loaded or MAX_WAIT has passed, then stops
+  // the loop entirely.
   const [loadProgress, setLoadProgress] = useState(0);
   useEffect(() => {
-    const MAX_WAIT = 4000;
+    const MAX_WAIT = 3200;
     let raf = 0;
     const start = performance.now();
     const tick = (t) => {
       const elapsed = t - start;
-      let finished = false;
-      setLoadProgress((p) => {
-        if (p >= 100) { finished = true; return 100; }
-        const forceDone = loaded || elapsed > MAX_WAIT;
-        const target = forceDone ? 100 : 90 * (1 - Math.exp(-elapsed / 900));
-        return Math.min(100, p + (target - p) * (forceDone ? 0.15 : 0.1));
-      });
-      if (!finished) raf = requestAnimationFrame(tick);
+      if (loaded || elapsed >= MAX_WAIT) {
+        setLoadProgress(100);
+        return; // done — no further frames needed
+      }
+      setLoadProgress(Math.min(92, (elapsed / MAX_WAIT) * 92));
+      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
