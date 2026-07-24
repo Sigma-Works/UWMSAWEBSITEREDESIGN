@@ -140,6 +140,48 @@ function archPath(w, h, spring) {
   const cx = w / 2;
   return `M0,${h} L0,${spring} Q0,${spring * 0.35} ${cx},0 Q${w},${spring * 0.35} ${w},${spring} L${w},${h} Z`;
 }
+
+// Point on a quadratic bezier at t, given the same three control points
+// archPath uses for its curved cap — used to sample "voussoir" tick marks
+// along the curve for a more genuinely Islamic-geometric mihrab look
+// (real mihrabs are built from radiating wedge-shaped stones).
+function quadPoint(p0, p1, p2, t) {
+  const mt = 1 - t;
+  return [
+    mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0],
+    mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1],
+  ];
+}
+
+// A symmetric fan of short radiating lines tracing the arch's curved cap,
+// like the wedge joints of real voussoir stonework, plus small 8-point
+// star accents at the two shoulders and the apex (echoing the site's
+// signature Star8 motif).
+function archOrnamentGeometry(w, h, spring, count = 6, tickLen = 9) {
+  const cx = w / 2;
+  const fanOrigin = [cx, spring * 0.6];
+  const ticks = [];
+  for (let i = 1; i < count; i++) {
+    const t = i / count;
+    const [x, y] = quadPoint([0, spring], [0, spring * 0.35], [cx, 0], t);
+    const dx = x - fanOrigin[0], dy = y - fanOrigin[1];
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = dx / dist, ny = dy / dist;
+    ticks.push([x, y, x + nx * tickLen, y + ny * tickLen]);
+    ticks.push([w - x, y, w - x - nx * tickLen, y + ny * tickLen]);
+  }
+  const star = (cx0, cy0, r) => {
+    const pts = [];
+    for (let i = 0; i < 16; i++) {
+      const rad = i % 2 === 0 ? r : r * 0.42;
+      const a = (Math.PI / 8) * i - Math.PI / 2;
+      pts.push(`${(cx0 + rad * Math.cos(a)).toFixed(2)},${(cy0 + rad * Math.sin(a)).toFixed(2)}`);
+    }
+    return pts.join(" ");
+  };
+  const stars = [star(0, spring, 8), star(w, spring, 8), star(cx, 0, 9)];
+  return { ticks, stars };
+}
 function Arch({ w = 120, h = 160, spring, stroke = PURPLE, sw = 2, fill = "none", children, style }) {
   const sp = spring ?? h * 0.55;
   return (
@@ -289,6 +331,39 @@ function useHeroScrollFX(rootRef, reduced) {
 
     return () => { cancelAnimationFrame(raf); io.disconnect(); };
   }, [reduced, rootRef]);
+}
+
+// Measures the box that exactly encloses everything from the top of
+// `startRef` to the bottom of `endRef` (both relative to `sectionRef`),
+// plus the widest of `widthRefs` — used to size HeroArch so it always
+// wraps the rosary wheel and the CTA buttons regardless of viewport size,
+// font-loading reflow, or how long the headline text is, instead of
+// guessing fixed percentages. Re-measures on resize and shortly after
+// mount (fonts/images can still reflow content a beat after first paint).
+function useEnclosingBox(sectionRef, startRef, endRef, widthRefs, padding = 36) {
+  const [box, setBox] = useState(null);
+  useEffect(() => {
+    const measure = () => {
+      const section = sectionRef.current, start = startRef.current, end = endRef.current;
+      if (!section || !start || !end) return;
+      const sBox = section.getBoundingClientRect();
+      const aBox = start.getBoundingClientRect();
+      const bBox = end.getBoundingClientRect();
+      const top = aBox.top - sBox.top - padding;
+      const bottom = bBox.bottom - sBox.top + padding;
+      let width = 0;
+      widthRefs.forEach((r) => {
+        if (r.current) width = Math.max(width, r.current.getBoundingClientRect().width);
+      });
+      setBox({ top, height: Math.max(0, bottom - top), width: width + padding * 2 });
+    };
+    measure();
+    window.addEventListener("resize", measure, { passive: true });
+    const t = setTimeout(measure, 350);
+    return () => { window.removeEventListener("resize", measure); clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectionRef, startRef, endRef, padding]);
+  return box;
 }
 
 // Fires once when the element scrolls into view.
@@ -1199,6 +1274,29 @@ export default function App() {
   // Curtain-up moment before the hero animates in — see HeroCurtain below.
   const [curtainDone, setCurtainDone] = useState(false);
 
+  // Real load progress (0-100) for the loading screen's logo fill — a
+  // synthetic ramp (so there's always visible motion) that eases toward
+  // ~90% while we wait on Supabase, then sprints to 100 once `loaded`
+  // actually flips true below. Not a fixed timer — genuinely tied to
+  // whether the content has arrived.
+  const [loadProgress, setLoadProgress] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const start = performance.now();
+    const tick = (t) => {
+      const elapsed = t - start;
+      let finished = false;
+      setLoadProgress((p) => {
+        if (p >= 100) { finished = true; return 100; }
+        const target = loaded ? 100 : 90 * (1 - Math.exp(-elapsed / 900));
+        return Math.min(100, p + (target - p) * (loaded ? 0.15 : 0.1));
+      });
+      if (!finished) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [loaded]);
+
   // Theme — remembers the visitor's choice, otherwise follows their OS setting.
   const [dark, setDark] = useState(() => {
     try {
@@ -1293,7 +1391,7 @@ export default function App() {
         color: "var(--text)", background: "var(--bg)", minHeight: "100vh" }}>
       <StyleTag />
       <RippleField reduced={reducedMotion} />
-      <HeroCurtain onDone={() => setCurtainDone(true)} />
+      <HeroCurtain progress={loadProgress} onDone={() => setCurtainDone(true)} />
       {petals && <SakuraWind dark={dark} />}
       <AnnouncementBar bar={data.bar} onNav={scrollTo} />
       <Nav active={active} onNav={scrollTo} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
@@ -2020,7 +2118,7 @@ function Lead({ children, delay = 260, style }) {
    up and out of view. Fires onDone once, so the hero underneath knows
    exactly when to start its own reveal. Skips straight to onDone for
    reduced-motion users so nothing blocks the page. */
-function HeroCurtain({ onDone }) {
+function HeroCurtain({ progress = 0, onDone }) {
   const reduced = useReducedMotion();
   const [visible, setVisible] = useState(!reduced);
   const rootRef = useRef(null);
@@ -2030,20 +2128,34 @@ function HeroCurtain({ onDone }) {
   // curtain had already unmounted and nulled out its refs.
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
+  const firedRef = useRef(false);
 
   useEffect(() => {
-    if (reduced) { onDoneRef.current?.(); return; }
-    // Hold on the spinning logo for a beat, then sweep the curtain away.
+    if (reduced) onDoneRef.current?.();
+  }, [reduced]);
+
+  // Dismissal is tied to real load progress now, not a fixed timer: once
+  // `progress` actually reaches 100 (see loadProgress in App), hold briefly
+  // so the fully-lit mark is visible for a beat, then sweep the curtain away.
+  useEffect(() => {
+    if (reduced || firedRef.current || progress < 100) return;
+    firedRef.current = true;
     const holdTimer = setTimeout(() => {
       animate(rootRef.current, {
         opacity: 0, scale: 1.08, duration: 700, ease: "inExpo",
         onComplete: () => { setVisible(false); onDoneRef.current?.(); },
       });
-    }, 1500);
+    }, 400);
     return () => clearTimeout(holdTimer);
-  }, [reduced]);
+  }, [progress, reduced]);
 
   if (!visible) return null;
+
+  const pct = Math.max(0, Math.min(100, progress));
+  // Interpolated purple -> gold, driven directly by load progress (no
+  // fixed-interval pulse anymore) — this IS the loading indicator.
+  const litColor = `color-mix(in srgb, ${NEON_PURPLE} ${(100 - pct).toFixed(0)}%, ${NEON_GOLD} ${pct.toFixed(0)}%)`;
+  const logoUrl = `${import.meta.env.BASE_URL}logo-mark.png`;
 
   return (
     <div ref={rootRef} aria-hidden="true" style={{
@@ -2051,44 +2163,38 @@ function HeroCurtain({ onDone }) {
       background: INK, pointerEvents: "none",
     }}>
       <div style={{ position: "relative", width: 148, height: 148, display: "grid", placeItems: "center" }}>
-        {/* radiating glow behind the mark, pulsing purple <-> gold on the
-            same interval as the logo's own glow (curtainNeon below) */}
-        <div aria-hidden="true" className="curtain-glow" style={{
-          position: "absolute", inset: -20, borderRadius: "50%", filter: "blur(22px)",
+        {/* radiating glow — colour tracks load progress rather than a fixed
+            timed pulse, and grows a little as loading nears completion */}
+        <div aria-hidden="true" style={{
+          position: "absolute", inset: -18, borderRadius: "50%",
+          filter: "blur(24px)", opacity: 0.35 + (pct / 100) * 0.4,
+          background: `radial-gradient(circle, ${litColor} 0%, transparent 72%)`,
+          transition: reduced ? "none" : "opacity 200ms linear",
         }} />
-        {/* No circular crop here (unlike the old version) — logo-mark.png
-            is shown in full, uncropped, just spinning in place. */}
-        <div className="curtain-logo-spin" style={{ position: "relative", width: 128, height: 128 }}>
-          <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="" width={128} height={128}
-            decoding="async"
-            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+        {/* No spin anymore — the mark holds still. Progress reads entirely
+            through the lines lighting up below. */}
+        <div style={{ position: "relative", width: 128, height: 128 }}>
+          {/* dim, "unlit" base mark */}
+          <img src={logoUrl} alt="" width={128} height={128} decoding="async"
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
+              objectFit: "contain", filter: "grayscale(1) brightness(.5)", opacity: 0.5 }} />
+          {/* "lit" overlay — masked to the logo's own silhouette (so only
+              the mark's actual lines/shapes light up, not a bounding box),
+              filled bottom-to-top as progress rises, colour sliding from
+              neon purple to neon gold as it completes */}
+          <div aria-hidden="true" style={{
+            position: "absolute", inset: 0,
+            backgroundColor: litColor,
+            WebkitMaskImage: `url(${logoUrl})`, maskImage: `url(${logoUrl})`,
+            WebkitMaskRepeat: "no-repeat", maskRepeat: "no-repeat",
+            WebkitMaskPosition: "center", maskPosition: "center",
+            WebkitMaskSize: "contain", maskSize: "contain",
+            clipPath: `inset(${(100 - pct).toFixed(1)}% 0 0 0)`,
+            transition: reduced ? "none" : "clip-path 120ms linear, background-color 200ms linear",
+            filter: `drop-shadow(0 0 9px ${litColor})`,
+          }} />
         </div>
       </div>
-      <style>{`
-        @keyframes curtainSpin { to { transform: rotate(360deg); } }
-        @keyframes curtainNeon {
-          0%, 100% {
-            filter: saturate(1.5)
-              drop-shadow(0 0 14px rgba(184,75,255,.85))
-              drop-shadow(0 0 32px rgba(184,75,255,.5));
-          }
-          50% {
-            filter: saturate(1.5)
-              drop-shadow(0 0 14px rgba(255,210,63,.85))
-              drop-shadow(0 0 32px rgba(255,210,63,.5));
-          }
-        }
-        @keyframes curtainGlowBg {
-          0%, 100% { background: radial-gradient(circle, rgba(184,75,255,.55) 0%, transparent 72%); }
-          50% { background: radial-gradient(circle, rgba(255,210,63,.55) 0%, transparent 72%); }
-        }
-        .curtain-logo-spin { animation: curtainSpin 3.4s linear infinite; }
-        .curtain-logo-spin img { animation: curtainNeon 3.4s ease-in-out infinite; }
-        .curtain-glow { animation: curtainGlowBg 3.4s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) {
-          .curtain-logo-spin, .curtain-logo-spin img, .curtain-glow { animation: none; }
-        }
-      `}</style>
     </div>
   );
 }
@@ -2281,15 +2387,23 @@ function HomeSection({ data, onNav, curtainDone }) {
   const stageRef = useRef(null);
   const glowARef = useRef(null);
   const glowBRef = useRef(null);
+  const rosetteWrapRef = useRef(null);
+  const ctaRef = useRef(null);
+  const archWidthRefs = useRef([rosetteWrapRef, ctaRef]).current;
   const titleWords = String(data.hero.title ?? seed.hero.title).split(" ");
 
   // Drives --fx-angle/--fx-mix on the section for the logo glow + arch glow.
   useHeroScrollFX(sectionRef, reduced);
 
-  // Fluid-reveal entrance — logo mark scales/fades in, wordmark letters
-  // stagger, then kicker/headline/subtitle/CTA. Fires once the curtain
-  // hands off (or immediately, statically, for reduced-motion visitors) —
-  // same gating as before.
+  // Sizes the arch so it actually encloses the rosette wheel down through
+  // the CTA buttons, measured from the real rendered layout rather than
+  // guessed percentages.
+  const archBox = useEnclosingBox(sectionRef, rosetteWrapRef, ctaRef, archWidthRefs, 38);
+
+  // Fluid-reveal entrance — logo mark scales/fades in, then
+  // kicker/headline/subtitle/CTA. Fires once the curtain hands off (or
+  // immediately, statically, for reduced-motion visitors) — same gating
+  // as before.
   useEffect(() => {
     const stage = stageRef.current;
     // .hero-logo-mark now lives outside stageRef (it's absolutely
@@ -2299,7 +2413,7 @@ function HomeSection({ data, onNav, curtainDone }) {
     if (!stage || !section) return;
     if (reduced) {
       utils.set(section.querySelectorAll(
-        ".hero-kicker,.wordmark .letter,.hero-word,.hero-subtitle,.hero-cta,.hero-logo-mark"
+        ".hero-kicker,.hero-word,.hero-subtitle,.hero-cta,.hero-logo-mark"
       ), { opacity: 1, translateY: 0, scale: 1, filter: "blur(0px)" });
       return;
     }
@@ -2309,9 +2423,6 @@ function HomeSection({ data, onNav, curtainDone }) {
     tl.add(section.querySelector(".hero-logo-mark"), {
         opacity: [0, 1], scale: [0.85, 1], duration: 950, ease: "outExpo",
       }, 0)
-      .add(stage.querySelectorAll(".wordmark .letter"), {
-        opacity: [0, 1], translateY: [16, 0], duration: 420, delay: stagger(35),
-      }, "-=250")
       .add(stage.querySelector(".hero-kicker"), {
         opacity: [0, 1], translateY: [22, 0], duration: 650,
       }, "-=150")
@@ -2361,17 +2472,20 @@ function HomeSection({ data, onNav, curtainDone }) {
         <HangingLanterns />
         {/* large rosary-wheel medallion — spins as the page scrolls, tilts
             slightly in 3D toward the cursor, centered directly behind the
-            logo/arch */}
-        <TiltWrap max={9} style={{ position: "absolute", top: "5%", left: "50%",
+            logo/arch. Wrapped in a plain measured div (rosetteWrapRef) so
+            HeroArch below can size itself to actually enclose it. */}
+        <div ref={rosetteWrapRef} style={{ position: "absolute", top: "5%", left: "50%",
           marginLeft: -280, pointerEvents: "none", zIndex: 0 }}>
-          <ScrollSpin speed={14}>
-            <Rosette points={16} skip={7} size={560} color={GOLD}
-              opacity={0.15} strokeWidth={1} />
-          </ScrollSpin>
-        </TiltWrap>
+          <TiltWrap max={9}>
+            <ScrollSpin speed={14}>
+              <Rosette points={16} skip={7} size={560} color={GOLD}
+                opacity={0.15} strokeWidth={1} />
+            </ScrollSpin>
+          </TiltWrap>
+        </div>
         {/* central mihrab arch silhouette — strokes draw themselves in,
-            framing the logo */}
-        <HeroArch />
+            framing the logo, sized to enclose the rosette + CTA buttons */}
+        <HeroArch box={archBox} />
 
         {/* ── Logo mark — pulled out of normal flow and pinned to the exact
             same center point as the rosary wheel above (top:5% + half its
@@ -2413,25 +2527,8 @@ function HomeSection({ data, onNav, curtainDone }) {
           {/* Spacer — the logo above is absolutely positioned (so it can be
               pinned to the rosary wheel's center), so this holds open the
               vertical space it used to occupy in normal flow, keeping the
-              wordmark/headline below from jumping up. */}
+              kicker/headline below from jumping up. */}
           <div aria-hidden="true" style={{ height: "clamp(300px, 38vw, 400px)" }} />
-
-          {/* ── Wordmark, letter-by-letter stagger ── */}
-          <div className="wordmark" style={{ display: "flex", alignItems: "baseline", gap: 10,
-            justifyContent: "center", flexWrap: "wrap", marginBottom: 18 }}>
-            {"MSA".split("").map((ch, i) => (
-              <span key={i} className="letter" style={{ display: "inline-block", opacity: 0,
-                fontSize: 44, fontWeight: 800, letterSpacing: 1,
-                backgroundImage: GRAD, WebkitBackgroundClip: "text", backgroundClip: "text",
-                WebkitTextFillColor: "transparent", color: "transparent" }}>{ch}</span>
-            ))}
-            {" AT UW".split("").map((ch, i) => (
-              <span key={`a${i}`} className="letter" style={{ display: "inline-block", opacity: 0,
-                fontSize: 22, fontWeight: 700, letterSpacing: 3, color: GOLD, alignSelf: "center" }}>
-                {ch === " " ? "\u00A0" : ch}
-              </span>
-            ))}
-          </div>
 
           <div className="hero-kicker" style={{ opacity: 0, display: "inline-flex", alignItems: "center", gap: 8,
             padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.16)",
@@ -2462,7 +2559,7 @@ function HomeSection({ data, onNav, curtainDone }) {
             color: "rgba(255,255,255,.85)", maxWidth: 660, margin: "0 auto 40px", lineHeight: 1.6 }}>
             {data.hero.mission}
           </p>
-          <div className="hero-cta" style={{ opacity: 0, display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+          <div ref={ctaRef} className="hero-cta" style={{ opacity: 0, display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
             <Magnetic><button className="btn" onClick={() => onNav("connect")}
               style={{ padding: "14px 30px", borderRadius: 12, fontWeight: 700, fontSize: 15.5,
                 border: "none", cursor: "pointer", color: "#fff",
@@ -2760,7 +2857,7 @@ function Tasbih({ height = 190, opacity = 0.5, color = GOLD, style }) {
 }
 
 /* Mihrab arch whose outline draws itself, then breathes gently. */
-function HeroArch() {
+function HeroArch({ box }) {
   const reduced = useReducedMotion();
   const [drawn, setDrawn] = useState(false);
   useEffect(() => {
@@ -2768,28 +2865,67 @@ function HeroArch() {
     const t = setTimeout(() => setDrawn(true), 120);
     return () => clearTimeout(t);
   }, [reduced]);
+
+  // Fixed proportions for the curve shape itself — only the CONTAINER
+  // (below) is resized to actually fit the rosette + CTA buttons; the
+  // viewBox stays the same so the mihrab silhouette doesn't distort.
+  const W = 220, H = 300, SPRING = 168;
+  const innerW = W * 0.82, innerH = H * 0.9, innerSpring = SPRING * 0.84;
+  const { ticks, stars } = React.useMemo(() => archOrnamentGeometry(W, H, SPRING, 6, 9), []);
+
   // NOTE: the centering translate and the float animation must live on
   // separate elements — a CSS animation that sets `transform` would otherwise
   // overwrite `translateX(-50%)` and knock the arch off-centre.
+  const outer = box
+    ? { position: "absolute", top: box.top, left: "50%", transform: "translateX(-50%)",
+        width: Math.max(box.width, 320), height: box.height, opacity: 0.55, pointerEvents: "none" }
+    : { position: "absolute", top: 40, left: "50%", transform: "translateX(-50%)",
+        width: "min(720px, 92%)", height: "90%", opacity: 0.55, pointerEvents: "none" };
+
+  const glowFilter = reduced ? "none"
+    : `drop-shadow(0 0 7px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))`;
+
   return (
-    <div aria-hidden="true"
-      style={{ position: "absolute", top: 40, left: "50%",
-        transform: "translateX(-50%)", width: "min(560px, 88%)", height: "82%",
-        opacity: 0.5, pointerEvents: "none" }}>
+    <div aria-hidden="true" style={outer}>
       <div className={reduced ? "" : "floaty-slow"} style={{ width: "100%", height: "100%" }}>
-        <svg viewBox="0 0 200 280" width="100%" height="100%" preserveAspectRatio="none">
-          <path d={archPath(200, 280, 150)} fill="none" stroke="rgba(201,182,136,.5)"
-            strokeWidth="1.2" pathLength="1"
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" preserveAspectRatio="none">
+          {/* outer mihrab outline — self-draws in, then carries the
+              scroll-reactive purple/gold glow (--fx-mix, set by
+              useHeroScrollFX on the section) */}
+          <path d={archPath(W, H, SPRING)} fill="none" stroke="rgba(201,182,136,.55)"
+            strokeWidth="1.4" pathLength="1"
             style={{
               strokeDasharray: 1,
               strokeDashoffset: drawn ? 0 : 1,
               transition: reduced ? "none" : `stroke-dashoffset 2600ms ${EASE.outSoft} 200ms`,
-              // Scroll-reactive glow along the outline — reads the same
-              // --fx-mix custom property the hero logo's glow uses (set by
-              // useHeroScrollFX on the section), so the arch visibly
-              // "catches" the same drifting purple/gold light as you scroll.
-              filter: reduced ? "none" : `drop-shadow(0 0 7px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))`,
+              filter: glowFilter,
             }} />
+
+          {/* inset concentric frame — slowly rotates with scroll position
+              (var(--fx-angle)) for a genuinely scroll-animated geometric
+              piece, not just a colour pulse */}
+          <g style={{
+            transform: `translate(${(W - innerW) / 2}px, ${H - innerH}px) rotate(calc(var(--fx-angle, 0deg) * 0.12))`,
+            transformOrigin: `${W / 2}px ${H - innerH / 2}px`,
+            opacity: drawn ? 0.55 : 0,
+            transition: reduced ? "none" : `opacity 1200ms ${EASE.outSoft} 650ms`,
+          }}>
+            <path d={archPath(innerW, innerH, innerSpring)} fill="none"
+              stroke="rgba(201,182,136,.4)" strokeWidth="1" />
+          </g>
+
+          {/* voussoir fan — short radiating ticks along the curve, like
+              wedge-stone joints on a real mihrab */}
+          <g stroke="rgba(201,182,136,.45)" strokeWidth="1"
+            style={{ opacity: drawn ? 1 : 0, transition: reduced ? "none" : `opacity 900ms ${EASE.outSoft} 1500ms` }}>
+            {ticks.map((t, i) => <line key={i} x1={t[0]} y1={t[1]} x2={t[2]} y2={t[3]} />)}
+          </g>
+
+          {/* 8-point star accents at the shoulders + apex — the site's
+              signature motif, worked into the arch itself */}
+          <g fill={GOLD} style={{ opacity: drawn ? 0.6 : 0, transition: reduced ? "none" : `opacity 900ms ${EASE.outSoft} 1700ms` }}>
+            {stars.map((s, i) => <polygon key={i} points={s} />)}
+          </g>
         </svg>
       </div>
     </div>
@@ -2913,7 +3049,8 @@ function Gallery({ items }) {
     if (reduced || !scalerItem) return;
     const wrap = wrapRef.current;
     const image = scalerImgRef.current;
-    if (!wrap || !image) return;
+    const sticky = wrap?.querySelector(".moments-sticky");
+    if (!wrap || !image || !sticky) return;
     let cancelled = false;
     const cleanups = [];
 
@@ -2925,45 +3062,51 @@ function Gallery({ items }) {
       const layers = wrap.querySelectorAll(".moments-layer");
       const naturalWidth = image.offsetWidth;
       const naturalHeight = image.offsetHeight;
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
+      // IMPORTANT: unlike the reference (a full-bleed page with no
+      // surrounding container), our gallery sits inside a padded,
+      // max-width content column. Using window.innerWidth/innerHeight
+      // here — like the reference does — made the "starts full-bleed"
+      // phase wider than its own sticky container, which then got clipped
+      // and looked broken. Sizing the start state to the sticky
+      // container's own box keeps it exactly filling the visible area,
+      // with nothing clipped.
+      const startWidth = sticky.clientWidth;
+      const startHeight = sticky.clientHeight;
 
-      // Scaler: shrinks from full viewport to its natural grid size, fully
-      // resolved by 48% of the runway (reference used 80% — pulled way in
-      // so it finishes mid-scroll instead of near the very end).
+      // Scaler: shrinks from filling the section down to its natural grid
+      // size. Offsets/easings match the reference implementation exactly
+      // (https://codepen.io/KevinGutowski/pen/QwNZYzL).
       cleanups.push(mscroll(
         manimate(image, {
-          width: [viewportWidth, naturalWidth],
-          height: [viewportHeight, naturalHeight],
+          width: [startWidth, naturalWidth],
+          height: [startHeight, naturalHeight],
         }, {
-          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },
-          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },
+          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },   // power2.inOut
+          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },  // power1.inOut
         }),
-        { target: wrap, offset: ["start start", "48% end"] }
+        { target: wrap, offset: ["start start", "80% end"] }
       ));
 
       const scaleEasings = [
-        cubicBezier(0.42, 0, 0.58, 1),
-        cubicBezier(0.76, 0, 0.24, 1),
-        cubicBezier(0.87, 0, 0.13, 1),
+        cubicBezier(0.42, 0, 0.58, 1),  // power1.inOut
+        cubicBezier(0.76, 0, 0.24, 1),  // power3.inOut
+        cubicBezier(0.87, 0, 0.13, 1),  // power4.inOut
       ];
 
       layers.forEach((layer, index) => {
-        // Center layer (index 2) resolves earliest, outer-edge layer
-        // (index 0) resolves last — but ALL of them land by roughly the
-        // runway's midpoint, so photos visibly spread outward from the
-        // center while the section is still on screen.
-        const endOffset = `${0.5 - index * 0.04} end`;
+        const endOffset = `${1 - index * 0.05} end`;
+        // fade: holds at 0 until 55% of this layer's own progress, then to 1
         cleanups.push(mscroll(
           manimate(layer, { opacity: [0, 0, 1] }, {
-            offset: [0, 0.35, 1],
-            easing: cubicBezier(0.61, 1, 0.88, 1),
+            offset: [0, 0.55, 1],
+            easing: cubicBezier(0.61, 1, 0.88, 1),  // sine.out
           }),
           { target: wrap, offset: ["start start", endOffset] }
         ));
+        // reveal: holds at scale 0 until 30% of this layer's own progress
         cleanups.push(mscroll(
           manimate(layer, { scale: [0, 0, 1] }, {
-            offset: [0, 0.15, 1],
+            offset: [0, 0.3, 1],
             easing: scaleEasings[index % scaleEasings.length],
           }),
           { target: wrap, offset: ["start start", endOffset] }
@@ -3031,16 +3174,30 @@ function Gallery({ items }) {
         </div>
       </div>
       <style>{`
-        .moments-wrap { position: relative; min-height: 170vh; }
+        /* Runway/sticky-pin mechanics match the reference implementation
+           (https://codepen.io/KevinGutowski/pen/QwNZYzL) as closely as
+           possible: a tall spacer (main section:first-of-type's 240vh)
+           holding a sticky 100vh viewport (.content) while scrolling
+           through it drives the animation.
+           One deliberate difference: .moments-sticky must NOT have
+           overflow:hidden. The reference's .content can safely clip
+           because it's a full-bleed page section — width:100vw with
+           nothing constraining it. Ours lives inside a padded, max-width
+           content column, so the scaler photo's "starts big" phase is
+           sized to *this container's own box* (see the effect above,
+           which reads sticky.clientWidth/Height instead of
+           window.innerWidth/Height) rather than the true viewport — and
+           clipping it here would cut that phase off right as it's
+           supposed to be filling the space. */
+        .moments-wrap { position: relative; min-height: 240vh; }
         .moments-sticky {
-          position: sticky; top: 0; min-height: 100vh;
+          position: sticky; top: 0; min-height: 100vh; width: 100%;
           display: flex; align-items: center; justify-content: center;
-          overflow: hidden;
         }
         .moments-grid {
           --offset: 0;
-          --container-width: 1100px;
-          --gap: clamp(8px, 3.2vw, 30px);
+          --container-width: 1600px;
+          --gap: clamp(10px, 7.35vw, 80px);
           width: var(--container-width);
           max-width: calc(100% - 40px);
           display: grid;
@@ -3234,6 +3391,16 @@ function MonthCalendar({ events }) {
   const [cursor, setCursor] = useState({ y: today.getFullYear(), m: today.getMonth() });
   const [picked, setPicked] = useState(null);
   const reduced = useReducedMotion();
+  // Animation refs/state — ported from the spring-based reveal language in
+  // https://github.com/yassir-jeraidi/full-calendar (weekday header +
+  // day-cell stagger-in, directional slide on month navigation, badge pop
+  // when the event count changes), reimplemented on our existing animejs
+  // motion system rather than adopting framer-motion.
+  const headerRef = useRef(null);
+  const gridRef = useRef(null);
+  const badgeRef = useRef(null);
+  const dirRef = useRef(0); // -1 = went to previous month, 1 = next, 0 = initial mount
+  const mountedRef = useRef(false);
 
   // Index events by YYYY-MM-DD for O(1) lookup per cell.
   const byDate = React.useMemo(() => {
@@ -3250,6 +3417,7 @@ function MonthCalendar({ events }) {
     `${cursor.y}-${String(cursor.m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
   const shift = (delta) => {
+    dirRef.current = delta;
     setPicked(null);
     setCursor(({ y, m }) => {
       const nm = m + delta;
@@ -3258,6 +3426,53 @@ function MonthCalendar({ events }) {
       return { y, m: nm };
     });
   };
+
+  // Weekday header (Sun/Mon/...) staggers down into place once on mount —
+  // it's static content, no need to re-run on month change.
+  useEffect(() => {
+    if (reduced) return;
+    const header = headerRef.current;
+    if (!header) return;
+    const a = animate(header.children, {
+      opacity: [0, 1], translateY: [-8, 0],
+      duration: 380, delay: stagger(35), ease: "outQuad",
+    });
+    return () => a?.revert?.();
+  }, [reduced]);
+
+  // Day cells: on every month change, slide in from the direction you
+  // navigated (previous -> from the left, next -> from the right — like
+  // AnimatePresence's slideFromLeft/slideFromRight in the reference),
+  // staggered cell-by-cell. First mount just fades/rises in place.
+  useEffect(() => {
+    if (reduced) return;
+    const grid = gridRef.current;
+    if (!grid) return;
+    const dir = mountedRef.current ? dirRef.current : 0;
+    mountedRef.current = true;
+    const fromX = dir === 0 ? 0 : dir * 18;
+    utils.set(grid.children, { opacity: 0, translateX: fromX, translateY: dir === 0 ? 8 : 0 });
+    const a = animate(grid.children, {
+      opacity: [0, 1], translateX: [fromX, 0], translateY: [dir === 0 ? 8 : 0, 0],
+      duration: 420, delay: stagger(10), ease: "outQuad",
+    });
+    return () => a?.revert?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cursor.y, cursor.m, reduced]);
+
+  // Event-count badge pops when the count for the visible month changes —
+  // mirrors the reference's AnimatePresence-based badge transition.
+  const monthEventCount = React.useMemo(
+    () => Object.keys(byDate).filter((k) => k.startsWith(`${cursor.y}-${String(cursor.m + 1).padStart(2, "0")}`)).length,
+    [byDate, cursor.y, cursor.m]
+  );
+  useEffect(() => {
+    if (reduced || !badgeRef.current) return;
+    const a = animate(badgeRef.current, {
+      scale: [0.8, 1], opacity: [0, 1], duration: 320, ease: "outBack",
+    });
+    return () => a?.revert?.();
+  }, [monthEventCount, reduced]);
 
   const isToday = (d) =>
     d && today.getFullYear() === cursor.y && today.getMonth() === cursor.m && today.getDate() === d;
@@ -3270,15 +3485,24 @@ function MonthCalendar({ events }) {
         gap: 12, padding: "16px 18px", background: "var(--tint)" }}>
         <button className="btn" onClick={() => shift(-1)} aria-label="Previous month"
           style={boardNavBtn}><ChevronLeft size={17} color="var(--accent)" /></button>
-        <div style={{ fontWeight: 800, fontSize: 16.5, color: "var(--accent)" }}>
-          {MONTH_NAMES[cursor.m]} {cursor.y}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ fontWeight: 800, fontSize: 16.5, color: "var(--accent)" }}>
+            {MONTH_NAMES[cursor.m]} {cursor.y}
+          </div>
+          {monthEventCount > 0 && (
+            <span key={monthEventCount} ref={badgeRef} style={{ fontSize: 11.5, fontWeight: 700,
+              padding: "2px 8px", borderRadius: 999, background: "var(--tint-2)",
+              color: "var(--accent)", border: "1px solid var(--border)" }}>
+              {monthEventCount} event{monthEventCount > 1 ? "s" : ""}
+            </span>
+          )}
         </div>
         <button className="btn" onClick={() => shift(1)} aria-label="Next month"
           style={boardNavBtn}><ChevronRight size={17} color="var(--accent)" /></button>
       </div>
 
       <div style={{ padding: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4,
+        <div ref={headerRef} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4,
           marginBottom: 6 }}>
           {DOW_SHORT.map((d) => (
             <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 700,
@@ -3286,7 +3510,7 @@ function MonthCalendar({ events }) {
               padding: "4px 0" }}>{d}</div>
           ))}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
+        <div ref={gridRef} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
           {cells.map((d, i) => {
             if (!d) return <div key={i} />;
             const k = key(d);
