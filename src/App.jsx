@@ -37,6 +37,12 @@ const GOLD_D = "#B7A57A";     // original gold, for light surfaces
 // signature gradient lifted straight from the logo
 const GRAD = `linear-gradient(120deg, ${VIOLET} 0%, ${MAUVE} 45%, ${PINK} 100%)`;
 const GRAD_DEEP = `linear-gradient(135deg, ${INK} 0%, ${PURPLE_D} 55%, ${PURPLE} 100%)`;
+// Saturated "neon" variants — brighter and punchier than the muted brand
+// PURPLE/GOLD above, used specifically for glow/radiate effects (hero logo,
+// loading icon, arch) where the ask is a literal neon-sign look rather than
+// the site's usual restrained palette.
+const NEON_PURPLE = "#B84BFF";
+const NEON_GOLD = "#FFD23F";
 
 const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-hoodie";
 
@@ -243,6 +249,46 @@ function useReducedMotion() {
     return () => mq.removeEventListener?.("change", on);
   }, []);
   return reduced;
+}
+
+// Drives the hero's scroll-reactive neon glow (logo, arch, rosette accent)
+// from one shared place instead of several independent animations. Writes
+// two CSS custom properties onto `rootRef`'s element — `--fx-angle` (a
+// rotation, for conic-gradient glows) and `--fx-mix` (0..1, for blending
+// between neon purple and neon gold) — combining a slow idle drift with a
+// nudge from scroll position, so the glow keeps moving gently at rest and
+// visibly shifts position/color as you scroll, like light catching an
+// object at a different angle. Everything downstream just reads the CSS
+// vars (`var(--fx-angle)`, `color-mix(... var(--fx-mix) ...)`), so this is
+// the only piece of JS involved — no React re-renders, one rAF loop, and
+// that loop only runs while the hero is actually on screen.
+function useHeroScrollFX(rootRef, reduced) {
+  useEffect(() => {
+    if (reduced) return;
+    const root = rootRef.current;
+    if (!root) return;
+    let raf = 0;
+    let inView = false;
+    const start = performance.now();
+
+    const tick = (t) => {
+      const elapsed = (t - start) / 1000;
+      const angle = (elapsed * 16 + window.scrollY * 0.12) % 360;
+      const mix = (Math.sin(elapsed * 0.25 + window.scrollY * 0.0035) + 1) / 2;
+      root.style.setProperty("--fx-angle", angle.toFixed(1) + "deg");
+      root.style.setProperty("--fx-mix", mix.toFixed(3));
+      if (inView) raf = requestAnimationFrame(tick);
+    };
+
+    const io = new IntersectionObserver(([entry]) => {
+      inView = entry.isIntersecting;
+      if (inView && !raf) raf = requestAnimationFrame(tick);
+      else if (!inView) { cancelAnimationFrame(raf); raf = 0; }
+    }, { rootMargin: "200px 0px" });
+    io.observe(root);
+
+    return () => { cancelAnimationFrame(raf); io.disconnect(); };
+  }, [reduced, rootRef]);
 }
 
 // Fires once when the element scrolls into view.
@@ -474,25 +520,53 @@ function ScrollSpin({ speed = 26, children, style, ...rest }) {
   const target = useRef(0);
   const current = useRef(0);
   const raf = useRef(0);
+  const inView = useRef(false);
 
+  // Same fix as Parallax: this used to run its rAF loop forever regardless
+  // of whether the wheel was ever visible. Now it only spins while in (or
+  // near) the viewport and stops once it has caught up to the scroll
+  // target, resuming on the next scroll tick.
   useEffect(() => {
     if (reduced) return;
     const el = ref.current;
     if (!el) return;
-    const measure = () => { target.current = (window.scrollY / 100) * speed; };
+
+    const startLoop = () => {
+      if (raf.current || !inView.current || document.hidden) return;
+      raf.current = requestAnimationFrame(tick);
+    };
+    const measure = () => {
+      target.current = (window.scrollY / 100) * speed;
+      startLoop();
+    };
     const tick = () => {
       current.current += (target.current - current.current) * 0.07;
       el.style.transform = `rotate(${current.current.toFixed(2)}deg)`;
+      const settled = Math.abs(target.current - current.current) < 0.02;
+      if (settled || !inView.current || document.hidden) { raf.current = 0; return; }
       raf.current = requestAnimationFrame(tick);
     };
+
+    const io = new IntersectionObserver(([entry]) => {
+      inView.current = entry.isIntersecting;
+      if (inView.current) startLoop();
+      else { cancelAnimationFrame(raf.current); raf.current = 0; }
+    }, { rootMargin: "200px 0px" });
+    io.observe(el);
+
     measure();
     current.current = target.current;
     el.style.transform = `rotate(${current.current.toFixed(2)}deg)`;
-    raf.current = requestAnimationFrame(tick);
+
+    const onVisibility = () => { if (!document.hidden) startLoop(); };
     window.addEventListener("scroll", measure, { passive: true });
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelAnimationFrame(raf.current);
+      raf.current = 0;
+      io.disconnect();
       window.removeEventListener("scroll", measure);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [speed, reduced]);
 
@@ -1564,6 +1638,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
   const go = (id) => { setOpenMenu(null); setMenuOpen(false); onNav(id); };
 
   return (
+    <>
     <header ref={navRef} style={{
       position: "sticky", top: 0, zIndex: 50,
       background: solid ? "var(--nav-bg-solid)" : "var(--nav-bg)",
@@ -1585,8 +1660,8 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         <button className="btn logomark" onClick={() => go("home")} aria-label="MSA at UW — home"
           style={{ display: "flex", alignItems: "center", gap: 10, background: "none",
             border: "none", cursor: "pointer", padding: 0, height: 44, flexShrink: 0 }}>
-          <img src={`${import.meta.env.BASE_URL}logo.jpg`} alt="MSA at UW logo"
-            style={{ height: 44, width: 44, borderRadius: 10, objectFit: "cover",
+          <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
+            style={{ height: 44, width: 44, objectFit: "contain",
               transformOrigin: "left center",
               transform: solid ? "scale(.86)" : "scale(1)",
               transition: `transform ${DUR.base}ms ${EASE.out}` }} />
@@ -1687,12 +1762,23 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
           {menuOpen ? <X size={26} color="var(--accent)" /> : <Menu size={26} color="var(--accent)" />}
         </button>
       </nav>
+    </header>
 
       {/* ── Mobile sheet ──────────────────────────────────────────────────
+          Rendered OUTSIDE <header> on purpose: <header> has a
+          backdrop-filter, and any ancestor with backdrop-filter/filter/
+          transform becomes the containing block for position:fixed
+          descendants (a well-known mobile Safari/Chrome gotcha). Nested
+          inside <header>, this sheet was sizing/positioning itself against
+          the ~68px-tall header box instead of the real viewport — combined
+          with the body-scroll lock below, that's what made the page look
+          totally frozen when opened on mobile (menu invisible/mispositioned
+          AND the page underneath unscrollable).
           Fixed below the bar and scrollable, so a long list can never run
           off-screen no matter how many items there are. */}
       <div className="mob" style={{
         display: "none", position: "fixed", left: 0, right: 0, top: 68, bottom: 0,
+        width: "100%", maxWidth: "100vw", boxSizing: "border-box", overflowX: "hidden",
         background: "var(--nav-bg-solid)",
         backdropFilter: "blur(18px) saturate(1.6)",
         WebkitBackdropFilter: "blur(18px) saturate(1.6)",
@@ -1765,7 +1851,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         @media (max-width: 980px) { .desk { display: none !important; } .mob { display: block !important; } }
         @media (max-width: 980px) { nav .mob { display: flex !important; } }
       `}</style>
-    </header>
+    </>
   );
 }
 
@@ -1929,17 +2015,15 @@ function Lead({ children, delay = 260, style }) {
 
 /* ---------- HOME ---------- */
 /* ── HeroCurtain ─────────────────────────────────────────────────────────
-   The opening moment: a large gold 8-point star draws itself in with
-   anime.js, holds for a beat with a soft glow pulse, then the whole
-   curtain sweeps up and out of view. Fires onDone once, so the hero
-   underneath knows exactly when to start its own reveal. Skips straight
-   to onDone for reduced-motion users so nothing blocks the page. */
+   The opening moment: the logo spins slowly with a neon glow that cycles
+   between purple and gold, holds for a beat, then the whole curtain sweeps
+   up and out of view. Fires onDone once, so the hero underneath knows
+   exactly when to start its own reveal. Skips straight to onDone for
+   reduced-motion users so nothing blocks the page. */
 function HeroCurtain({ onDone }) {
   const reduced = useReducedMotion();
   const [visible, setVisible] = useState(!reduced);
   const rootRef = useRef(null);
-  const strokeRef = useRef(null);
-  const fillRef = useRef(null);
   // Keep the latest onDone without making the mount effect depend on it —
   // onDone is an inline arrow from the parent, so its identity changes on
   // every App render. Depending on it directly re-ran this effect after the
@@ -1949,21 +2033,14 @@ function HeroCurtain({ onDone }) {
 
   useEffect(() => {
     if (reduced) { onDoneRef.current?.(); return; }
-    const path = strokeRef.current;
-    const len = path.getTotalLength();
-    utils.set(path, { strokeDasharray: len, strokeDashoffset: len });
-
-    const tl = createTimeline({
-      onComplete: () => {
-        setVisible(false);
-        onDoneRef.current?.();
-      },
-    });
-    tl.add(path, { strokeDashoffset: [len, 0], duration: 1350, ease: "inOutSine" })
-      .add(fillRef.current, { opacity: [0, 0.9], duration: 500, ease: "outQuad" }, "-=200")
-      .add(rootRef.current, { opacity: 0, scale: 1.08, duration: 700, ease: "inExpo" }, "+=300");
-
-    return () => tl?.revert?.();
+    // Hold on the spinning logo for a beat, then sweep the curtain away.
+    const holdTimer = setTimeout(() => {
+      animate(rootRef.current, {
+        opacity: 0, scale: 1.08, duration: 700, ease: "inExpo",
+        onComplete: () => { setVisible(false); onDoneRef.current?.(); },
+      });
+    }, 1500);
+    return () => clearTimeout(holdTimer);
   }, [reduced]);
 
   if (!visible) return null;
@@ -1973,30 +2050,48 @@ function HeroCurtain({ onDone }) {
       position: "fixed", inset: 0, zIndex: 999, display: "grid", placeItems: "center",
       background: INK, pointerEvents: "none",
     }}>
-      <svg viewBox="0 0 200 200" width="130" height="130">
-        <defs>
-          <filter id="curtain-glow" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur stdDeviation="5" result="b" />
-            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-        </defs>
-        <path ref={fillRef} d={STAR8_PATH} fill={GOLD} opacity="0" filter="url(#curtain-glow)" />
-        <path ref={strokeRef} d={STAR8_PATH} fill="none" stroke={GOLD} strokeWidth="1.6"
-          strokeLinejoin="round" filter="url(#curtain-glow)" />
-      </svg>
+      <div style={{ position: "relative", width: 148, height: 148, display: "grid", placeItems: "center" }}>
+        {/* radiating glow behind the mark, pulsing purple <-> gold on the
+            same interval as the logo's own glow (curtainNeon below) */}
+        <div aria-hidden="true" className="curtain-glow" style={{
+          position: "absolute", inset: -20, borderRadius: "50%", filter: "blur(22px)",
+        }} />
+        {/* No circular crop here (unlike the old version) — logo-mark.png
+            is shown in full, uncropped, just spinning in place. */}
+        <div className="curtain-logo-spin" style={{ position: "relative", width: 128, height: 128 }}>
+          <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="" width={128} height={128}
+            decoding="async"
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+        </div>
+      </div>
+      <style>{`
+        @keyframes curtainSpin { to { transform: rotate(360deg); } }
+        @keyframes curtainNeon {
+          0%, 100% {
+            filter: saturate(1.5)
+              drop-shadow(0 0 14px rgba(184,75,255,.85))
+              drop-shadow(0 0 32px rgba(184,75,255,.5));
+          }
+          50% {
+            filter: saturate(1.5)
+              drop-shadow(0 0 14px rgba(255,210,63,.85))
+              drop-shadow(0 0 32px rgba(255,210,63,.5));
+          }
+        }
+        @keyframes curtainGlowBg {
+          0%, 100% { background: radial-gradient(circle, rgba(184,75,255,.55) 0%, transparent 72%); }
+          50% { background: radial-gradient(circle, rgba(255,210,63,.55) 0%, transparent 72%); }
+        }
+        .curtain-logo-spin { animation: curtainSpin 3.4s linear infinite; }
+        .curtain-logo-spin img { animation: curtainNeon 3.4s ease-in-out infinite; }
+        .curtain-glow { animation: curtainGlowBg 3.4s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .curtain-logo-spin, .curtain-logo-spin img, .curtain-glow { animation: none; }
+        }
+      `}</style>
     </div>
   );
 }
-const STAR8_PATH = (() => {
-  let d = "";
-  for (let i = 0; i < 16; i++) {
-    const r = i % 2 === 0 ? 74 : 32;
-    const a = (Math.PI / 8) * i - Math.PI / 2;
-    const x = 100 + r * Math.cos(a), y = 100 + r * Math.sin(a);
-    d += (i === 0 ? "M" : "L") + x.toFixed(2) + "," + y.toFixed(2) + " ";
-  }
-  return d + "Z";
-})();
 
 /* ── 3D cursor tilt ──────────────────────────────────────────────────────
    Wraps a child in a perspective container that tilts toward the cursor
@@ -2188,15 +2283,22 @@ function HomeSection({ data, onNav, curtainDone }) {
   const glowBRef = useRef(null);
   const titleWords = String(data.hero.title ?? seed.hero.title).split(" ");
 
+  // Drives --fx-angle/--fx-mix on the section for the logo glow + arch glow.
+  useHeroScrollFX(sectionRef, reduced);
+
   // Fluid-reveal entrance — logo mark scales/fades in, wordmark letters
   // stagger, then kicker/headline/subtitle/CTA. Fires once the curtain
   // hands off (or immediately, statically, for reduced-motion visitors) —
   // same gating as before.
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage) return;
+    // .hero-logo-mark now lives outside stageRef (it's absolutely
+    // positioned against the section so it can be pinned to the rosary
+    // wheel's center) — so queries for it are scoped to the whole section.
+    const section = sectionRef.current;
+    if (!stage || !section) return;
     if (reduced) {
-      utils.set(stage.querySelectorAll(
+      utils.set(section.querySelectorAll(
         ".hero-kicker,.wordmark .letter,.hero-word,.hero-subtitle,.hero-cta,.hero-logo-mark"
       ), { opacity: 1, translateY: 0, scale: 1, filter: "blur(0px)" });
       return;
@@ -2204,7 +2306,7 @@ function HomeSection({ data, onNav, curtainDone }) {
     if (!curtainDone) return;
 
     const tl = createTimeline({ defaults: { ease: "outExpo" } });
-    tl.add(stage.querySelector(".hero-logo-mark"), {
+    tl.add(section.querySelector(".hero-logo-mark"), {
         opacity: [0, 1], scale: [0.85, 1], duration: 950, ease: "outExpo",
       }, 0)
       .add(stage.querySelectorAll(".wordmark .letter"), {
@@ -2257,17 +2359,62 @@ function HomeSection({ data, onNav, curtainDone }) {
           width: 480, height: 480, borderRadius: "50%", filter: "blur(90px)", pointerEvents: "none", zIndex: 0,
           background: `radial-gradient(circle, rgba(140,120,180,.42) 0%, transparent 70%)` }} />
         <HangingLanterns />
+        {/* large rosary-wheel medallion — spins as the page scrolls, tilts
+            slightly in 3D toward the cursor, centered directly behind the
+            logo/arch */}
+        <TiltWrap max={9} style={{ position: "absolute", top: "5%", left: "50%",
+          marginLeft: -280, pointerEvents: "none", zIndex: 0 }}>
+          <ScrollSpin speed={14}>
+            <Rosette points={16} skip={7} size={560} color={GOLD}
+              opacity={0.15} strokeWidth={1} />
+          </ScrollSpin>
+        </TiltWrap>
+        {/* central mihrab arch silhouette — strokes draw themselves in,
+            framing the logo */}
+        <HeroArch />
+
+        {/* ── Logo mark — pulled out of normal flow and pinned to the exact
+            same center point as the rosary wheel above (top:5% + half its
+            560px size), so the two are always concentric regardless of
+            viewport height, and sized to sit comfortably inside the arch's
+            opening. A radiating neon purple/gold glow sits behind it, its
+            angle driven by useHeroScrollFX (see --fx-angle/--fx-mix on the
+            section), so the light visibly shifts position as you scroll —
+            like catching the mark at a different angle.
+            NOTE: the centering transform and the entrance scale/opacity
+            animation (added to .hero-logo-mark by anime.js below) must live
+            on separate elements — same reason as TiltWrap — otherwise the
+            animation's own `transform` write would knock the mark off its
+            centered position. ── */}
+        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 280px)",
+          transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
+          <div className="hero-logo-mark" style={{
+            position: "relative", opacity: 0,
+            width: "clamp(230px, 34vw, 340px)", height: "clamp(230px, 34vw, 340px)",
+            display: "grid", placeItems: "center",
+          }}>
+            {/* glow layer — a blurred conic gradient rotating with scroll,
+                so purple/gold trade places around the mark as you scroll */}
+            <div aria-hidden="true" style={{
+              position: "absolute", inset: "-30%", borderRadius: "50%",
+              background: `conic-gradient(from var(--fx-angle, 0deg), ${NEON_PURPLE}, ${NEON_GOLD}, ${NEON_PURPLE})`,
+              filter: "blur(34px)", opacity: 0.6, mixBlendMode: "screen",
+            }} />
+            <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
+              decoding="async"
+              style={{ position: "relative", width: "82%", height: "82%", objectFit: "contain",
+                filter: `drop-shadow(0 8px 26px rgba(0,0,0,.4)) drop-shadow(0 0 22px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))` }} />
+          </div>
+        </div>
+
         <div ref={stageRef} style={{ maxWidth: 960, margin: "0 auto", position: "relative", zIndex: 2,
           textAlign: "center", paddingBottom: 90 }}>
 
-          {/* ── Logo mark, fades/scales in ── */}
-          <div className="hero-logo-mark" style={{ position: "relative", width: 220, height: 220,
-            margin: "0 auto 8px", opacity: 0 }}>
-            <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
-              width={220} height={220} decoding="async"
-              style={{ width: "100%", height: "100%", objectFit: "contain",
-                filter: "drop-shadow(0 8px 26px rgba(0,0,0,.35))" }} />
-          </div>
+          {/* Spacer — the logo above is absolutely positioned (so it can be
+              pinned to the rosary wheel's center), so this holds open the
+              vertical space it used to occupy in normal flow, keeping the
+              wordmark/headline below from jumping up. */}
+          <div aria-hidden="true" style={{ height: "clamp(300px, 38vw, 400px)" }} />
 
           {/* ── Wordmark, letter-by-letter stagger ── */}
           <div className="wordmark" style={{ display: "flex", alignItems: "baseline", gap: 10,
@@ -2546,8 +2693,8 @@ function AnimatedLogo() {
         </div>
       )}
       <div className={reduced ? "" : "logofloat"} style={{ position: "relative" }}>
-        <img src={`${import.meta.env.BASE_URL}logo.jpg`} alt="MSA at UW logo"
-          style={{ width: 132, height: 132, borderRadius: 24, objectFit: "cover",
+        <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
+          style={{ width: 132, height: 132, objectFit: "contain",
             display: "block",
             boxShadow: hover
               ? "0 20px 54px rgba(0,0,0,.55), 0 0 0 1px rgba(201,182,136,.55)"
@@ -2637,6 +2784,11 @@ function HeroArch() {
               strokeDasharray: 1,
               strokeDashoffset: drawn ? 0 : 1,
               transition: reduced ? "none" : `stroke-dashoffset 2600ms ${EASE.outSoft} 200ms`,
+              // Scroll-reactive glow along the outline — reads the same
+              // --fx-mix custom property the hero logo's glow uses (set by
+              // useHeroScrollFX on the section), so the arch visibly
+              // "catches" the same drifting purple/gold light as you scroll.
+              filter: reduced ? "none" : `drop-shadow(0 0 7px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))`,
             }} />
         </svg>
       </div>
@@ -2709,101 +2861,34 @@ function PatternField() {
   return <div aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>{stars}</div>;
 }
 
+/* ── Gallery / "Moments from the year" ────────────────────────────────────
+   Ported from the reference (https://codepen.io/KevinGutowski/pen/QwNZYzL):
+   a real CSS Grid + subgrid layout — one "scaler" photo dead center that
+   starts full-bleed and shrinks to its natural grid-cell size as you
+   scroll, while three "layers" of photos (outer edges, inner columns,
+   center top/bottom) scale + fade in from the middle outward. Using an
+   actual grid (rather than one big auto-fit grid with hand-computed
+   fly-out offsets) is what makes the outward spread read correctly at
+   every viewport size — each photo already lives in its final position,
+   it just animates in from 0.
+   Tuned so the whole reveal is DONE by ~48% of the scroll runway — i.e.
+   photos spread out while the section is still comfortably on screen,
+   not only once you've nearly scrolled past it. */
 function Gallery({ items }) {
-  const [i, setI] = useState(0);
-  const [prev, setPrev] = useState(0);
-  const [paused, setPaused] = useState(false);
   const reduced = useReducedMotion();
-  const DWELL = 5600;
+  const wrapRef = useRef(null);
   const scalerImgRef = useRef(null);
-  const gridRef = useRef(null);
 
-  // Scroll-driven "moments" opener: a full-bleed photo that shrinks down
-  // into a normal image as you scroll through the gallery section, while
-  // the thumbnail layers beneath it fade + scale in with staggered easing.
-  // Loaded from the same motion.js build used for the effect elsewhere on
-  // the site (dynamic import so it isn't pulled into the main bundle).
-  useEffect(() => {
-    if (reduced || !items?.length) return;
-    let cancelled = false;
-    const cleanups = [];
-
-    (async () => {
-      const { animate: manimate, scroll: mscroll, stagger: mstagger, cubicBezier } =
-        await import("https://cdn.jsdelivr.net/npm/motion@11.11.16/+esm");
-      if (cancelled) return;
-
-      const section = document.getElementById("gallery");
-      const image = scalerImgRef.current;
-      const layers = gridRef.current
-        ? gridRef.current.querySelectorAll(":scope > .layer")
-        : [];
-      if (!section || !image) return;
-
-      const naturalWidth = image.offsetWidth;
-      const naturalHeight = image.offsetHeight;
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-
-      cleanups.push(mscroll(
-        manimate(image, {
-          width: [viewportWidth, naturalWidth],
-          height: [viewportHeight, naturalHeight],
-        }, {
-          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },
-          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },
-        }),
-        { target: section, offset: ["start start", "80% end"] }
-      ));
-
-      const scaleEasings = [
-        cubicBezier(0.42, 0, 0.58, 1),
-        cubicBezier(0.76, 0, 0.24, 1),
-        cubicBezier(0.87, 0, 0.13, 1),
-      ];
-
-      layers.forEach((layer, index) => {
-        const endOffset = `${1 - (index % scaleEasings.length) * 0.05} end`;
-        cleanups.push(mscroll(
-          manimate(layer, { opacity: [0, 0, 1] }, {
-            offset: [0, 0.55, 1],
-            easing: cubicBezier(0.61, 1, 0.88, 1),
-          }),
-          { target: section, offset: ["start start", endOffset] }
-        ));
-        cleanups.push(mscroll(
-          manimate(layer, { scale: [0, 0, 1] }, {
-            offset: [0, 0.3, 1],
-            easing: scaleEasings[index % scaleEasings.length],
-          }),
-          { target: section, offset: ["start start", endOffset] }
-        ));
-      });
-    })();
-
-    return () => {
-      cancelled = true;
-      cleanups.forEach((stop) => { try { stop?.(); } catch {} });
-    };
-  }, [reduced, items]);
-
-  const go = useCallback((n) => {
-    setI((cur) => {
-      if (n === cur) return cur;
-      setPrev(cur);
-      return (n + items.length) % items.length;
-    });
-  }, [items.length]);
-
-  // Auto-advance. Pauses on hover/focus, when the tab is hidden, and for
-  // reduced-motion users. Restarts cleanly whenever the slide changes.
-  useEffect(() => {
-    if (paused || reduced || items.length < 2) return;
-    const t = setInterval(() => {
-      if (!document.hidden) go(i + 1);
-    }, DWELL);
-    return () => clearInterval(t);
-  }, [paused, reduced, items.length, i, go]);
+  const list = items?.length ? items : [];
+  const scalerItem = list[0];
+  // Everything after the scaler photo feeds the 14 layer slots (6 + 6 + 2),
+  // cycling around if there aren't 14 distinct photos yet — so the effect
+  // looks fully populated whether the gallery has 2 photos or 20.
+  const pool = list.length > 1 ? list.slice(1) : list;
+  const pick = (n) => (pool.length ? pool[n % pool.length] : null);
+  const layer1 = Array.from({ length: 6 }, (_, i) => pick(i));
+  const layer2 = Array.from({ length: 6 }, (_, i) => pick(i + 6));
+  const layer3 = Array.from({ length: 2 }, (_, i) => pick(i + 12));
 
   const grad = (n) => {
     const g = [
@@ -2814,141 +2899,186 @@ function Gallery({ items }) {
     return g[n % g.length];
   };
 
-  const galleryHero = items?.[0];
-
-  return (
-    <div onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
-         onFocusCapture={() => setPaused(true)} onBlurCapture={() => setPaused(false)}>
-      {/* ── Moments opener — full-bleed photo that shrinks into place as you
-          scroll through the gallery, via the site-wide scroll-scale effect ── */}
-      {galleryHero && (
-        <div className="scaler" style={{ marginBottom: 22 }}>
-          {galleryHero.img ? (
-            <img ref={scalerImgRef} src={galleryHero.img}
-              alt={galleryHero.caption || "Community moment"}
-              style={{ display: "block", width: "100%", height: "auto", maxHeight: 420,
-                margin: "0 auto", borderRadius: 22, objectFit: "cover",
-                boxShadow: "0 24px 60px rgba(20,17,24,.22)" }} />
-          ) : (
-            <div ref={scalerImgRef} style={{ width: "100%", height: 320, borderRadius: 22,
-              background: grad(0), boxShadow: "0 24px 60px rgba(20,17,24,.22)" }} />
-          )}
-        </div>
+  const cell = (it, n, key) => (
+    <div key={key}>
+      {it?.img ? (
+        <img src={it.img} alt={it.caption || ""} loading="lazy" />
+      ) : (
+        <div style={{ width: "100%", aspectRatio: "4 / 5", borderRadius: 14, background: grad(n) }} />
       )}
+    </div>
+  );
 
-      {/* Featured slide — every slide is layered and crossfaded, so there is
-          never a hard swap. The active slide also drifts (Ken Burns). */}
-      <Reveal variant="rise" distance={34} duration={DUR.slow}>
-        <div style={{ position: "relative", borderRadius: 22, overflow: "hidden",
-          aspectRatio: "16 / 9", background: grad(i), marginBottom: 16,
-          boxShadow: "0 24px 60px rgba(20,17,24,.22)" }}>
+  useEffect(() => {
+    if (reduced || !scalerItem) return;
+    const wrap = wrapRef.current;
+    const image = scalerImgRef.current;
+    if (!wrap || !image) return;
+    let cancelled = false;
+    const cleanups = [];
 
-          {items.map((it, n) => {
-            const active = n === i;
-            const wasActive = n === prev;
-            return (
-              <div key={it.id ?? n} aria-hidden={!active} style={{
-                position: "absolute", inset: 0,
-                background: grad(n),
-                opacity: active ? 1 : 0,
-                transition: reduced ? "none"
-                  : `opacity 900ms ${EASE.outSoft}`,
-                zIndex: active ? 2 : wasActive ? 1 : 0,
-              }}>
-                {it.img ? (
-                  <img src={it.img} alt={it.caption} loading={active ? "eager" : "lazy"}
-                    style={{
-                      position: "absolute", inset: 0, width: "100%", height: "100%",
-                      objectFit: "cover",
-                      transform: active ? "scale(1.06)" : "scale(1)",
-                      transition: reduced ? "none" : `transform ${DWELL + 1800}ms linear`,
-                      willChange: "transform",
-                    }} />
-                ) : (
-                  <div style={{ position: "absolute", inset: 0, opacity: .15 }}><PatternField /></div>
-                )}
-                {/* readability scrim */}
-                <div style={{ position: "absolute", inset: 0,
-                  background: it.img
-                    ? "linear-gradient(to top, rgba(20,17,24,.62) 0%, rgba(20,17,24,.12) 42%, transparent 68%)"
-                    : "none" }} />
-              </div>
-            );
-          })}
+    (async () => {
+      const { animate: manimate, scroll: mscroll, cubicBezier } =
+        await import("https://cdn.jsdelivr.net/npm/motion@11.11.16/+esm");
+      if (cancelled) return;
 
-          {/* Caption — re-animates on each slide change via the key */}
-          <div key={i} style={{ position: "absolute", inset: 0, zIndex: 3,
-            display: "grid", placeItems: "center", alignContent: "end",
-            textAlign: "center", color: "#fff", paddingBottom: 34,
-            pointerEvents: "none" }}>
-            {!items[i].img && <Star8 size={54} color="#fff" opacity={.9} />}
-            <div style={{ fontSize: 13, letterSpacing: "2px", textTransform: "uppercase",
-              color: "rgba(255,255,255,.85)",
-              animation: reduced ? "none" : `rise ${DUR.slow}ms ${EASE.outSoft} 120ms both` }}>
-              {items[i].tag}</div>
-            <div style={{ fontSize: "clamp(20px,2.6vw,28px)", fontWeight: 700, marginTop: 6,
-              textShadow: "0 2px 18px rgba(0,0,0,.5)",
-              animation: reduced ? "none" : `rise ${DUR.slow}ms ${EASE.outSoft} 210ms both` }}>
-              {items[i].caption}</div>
-          </div>
+      const layers = wrap.querySelectorAll(".moments-layer");
+      const naturalWidth = image.offsetWidth;
+      const naturalHeight = image.offsetHeight;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
 
-          <button className="btn" onClick={() => go(i - 1)} aria-label="Previous photo"
-            style={carBtn("left")}><ChevronLeft size={22} color={PURPLE} /></button>
-          <button className="btn" onClick={() => go(i + 1)} aria-label="Next photo"
-            style={carBtn("right")}><ChevronRight size={22} color={PURPLE} /></button>
+      // Scaler: shrinks from full viewport to its natural grid size, fully
+      // resolved by 48% of the runway (reference used 80% — pulled way in
+      // so it finishes mid-scroll instead of near the very end).
+      cleanups.push(mscroll(
+        manimate(image, {
+          width: [viewportWidth, naturalWidth],
+          height: [viewportHeight, naturalHeight],
+        }, {
+          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },
+          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },
+        }),
+        { target: wrap, offset: ["start start", "48% end"] }
+      ));
 
-          {/* Progress dots — active one stretches into a bar */}
-          <div style={{ position: "absolute", bottom: 14, left: 0, right: 0, zIndex: 4,
-            display: "flex", justifyContent: "center", gap: 7 }}>
-            {items.map((_, n) => (
-              <button key={n} onClick={() => go(n)} aria-label={`Photo ${n + 1}`}
-                style={{ width: 26, height: 8, borderRadius: 99, border: "none",
-                  background: "transparent", cursor: "pointer", padding: 0,
-                  display: "grid", placeItems: "center" }}>
-                {/* scaleX rather than width so the dot never triggers layout */}
-                <span aria-hidden="true" style={{ display: "block", width: 26, height: 8,
-                  borderRadius: 99, transformOrigin: "50% 50%",
-                  transform: n === i ? "scaleX(1)" : "scaleX(.31)",
-                  background: n === i ? GOLD : "rgba(255,255,255,.55)",
-                  transition: `transform ${DUR.base}ms ${EASE.out}, background ${DUR.base}ms ${EASE.out}` }} />
-              </button>
-            ))}
-          </div>
-        </div>
-      </Reveal>
+      const scaleEasings = [
+        cubicBezier(0.42, 0, 0.58, 1),
+        cubicBezier(0.76, 0, 0.24, 1),
+        cubicBezier(0.87, 0, 0.13, 1),
+      ];
 
-      {/* Thumbnails — each one is a "layer" that scales/fades in as you
-          scroll, driven by the same motion.js effect as the opener above.
-          The active one still lifts on interaction. */}
-      <div ref={gridRef} className="grid"
-        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(90px,1fr))", gap: 10 }}>
-        {items.map((it, n) => (
-          <div key={it.id ?? n} className="layer" style={{ opacity: reduced ? 1 : 0 }}>
-            <button onClick={() => go(n)} aria-label={it.caption} className="zoomable"
-              style={{ width: "100%", height: 66, borderRadius: 12,
-                border: n === i ? `2px solid ${GOLD}` : "2px solid transparent",
-                background: grad(n), cursor: "pointer", padding: 0,
-                position: "relative", overflow: "hidden",
-                opacity: n === i ? 1 : .72,
-                transform: n === i ? "translate3d(0,-3px,0)" : "none",
-                boxShadow: n === i ? "0 10px 24px rgba(75,46,131,.24)" : "none",
-                transition: `opacity ${DUR.fast}ms ${EASE.out}, transform ${DUR.fast}ms ${EASE.out}, border-color ${DUR.fast}ms ${EASE.out}, box-shadow ${DUR.fast}ms ${EASE.out}` }}>
-              {it.img && <img src={it.img} alt="" loading="lazy"
-                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />}
-              <span style={{ position: "absolute", bottom: 4, left: 6, fontSize: 10.5, fontWeight: 600,
-                color: "#fff", textShadow: "0 1px 4px rgba(0,0,0,.7)", zIndex: 1 }}>{it.tag}</span>
-            </button>
+      layers.forEach((layer, index) => {
+        // Center layer (index 2) resolves earliest, outer-edge layer
+        // (index 0) resolves last — but ALL of them land by roughly the
+        // runway's midpoint, so photos visibly spread outward from the
+        // center while the section is still on screen.
+        const endOffset = `${0.5 - index * 0.04} end`;
+        cleanups.push(mscroll(
+          manimate(layer, { opacity: [0, 0, 1] }, {
+            offset: [0, 0.35, 1],
+            easing: cubicBezier(0.61, 1, 0.88, 1),
+          }),
+          { target: wrap, offset: ["start start", endOffset] }
+        ));
+        cleanups.push(mscroll(
+          manimate(layer, { scale: [0, 0, 1] }, {
+            offset: [0, 0.15, 1],
+            easing: scaleEasings[index % scaleEasings.length],
+          }),
+          { target: wrap, offset: ["start start", endOffset] }
+        ));
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      cleanups.forEach((stop) => { try { stop?.(); } catch {} });
+    };
+  }, [reduced, scalerItem]);
+
+  if (!scalerItem) return null;
+
+  // Reduced-motion / no-JS-animation fallback: a plain static photo grid,
+  // fully visible immediately, no scroll trick at all.
+  if (reduced) {
+    const flat = [scalerItem, ...layer1, ...layer2, ...layer3].filter(Boolean);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))",
+        gap: "clamp(10px,2.4vw,20px)" }}>
+        {flat.map((it, i) => (
+          <div key={it.id ?? i} style={{ borderRadius: 14, overflow: "hidden", aspectRatio: "4 / 5" }}>
+            {it.img
+              ? <img src={it.img} alt={it.caption || ""} loading="lazy"
+                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              : <div style={{ width: "100%", height: "100%", background: grad(i) }} />}
           </div>
         ))}
       </div>
+    );
+  }
+
+  return (
+    <div ref={wrapRef} className="moments-wrap">
+      <div className="moments-sticky">
+        <div className="moments-grid">
+          <div className="moments-layer">
+            {layer1.map((it, i) => cell(it, i, `l1-${i}`))}
+          </div>
+          <div className="moments-layer">
+            {layer2.map((it, i) => cell(it, i + 6, `l2-${i}`))}
+          </div>
+          <div className="moments-layer">
+            {layer3.map((it, i) => cell(it, i + 12, `l3-${i}`))}
+          </div>
+          <div className="moments-scaler-cell">
+            <div className="moments-scaler">
+              {scalerItem.img ? (
+                <img ref={scalerImgRef} src={scalerItem.img}
+                  alt={scalerItem.caption || "Community moment"} />
+              ) : (
+                <div ref={scalerImgRef} style={{ width: "100%", height: "100%", background: grad(0) }} />
+              )}
+              {scalerItem.caption && (
+                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "26px 16px 14px",
+                  background: "linear-gradient(to top, rgba(20,17,24,.65), transparent)",
+                  color: "#fff", fontSize: 14, fontWeight: 700, borderRadius: "0 0 14px 14px" }}>
+                  {scalerItem.caption}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+      <style>{`
+        .moments-wrap { position: relative; min-height: 170vh; }
+        .moments-sticky {
+          position: sticky; top: 0; min-height: 100vh;
+          display: flex; align-items: center; justify-content: center;
+          overflow: hidden;
+        }
+        .moments-grid {
+          --offset: 0;
+          --container-width: 1100px;
+          --gap: clamp(8px, 3.2vw, 30px);
+          width: var(--container-width);
+          max-width: calc(100% - 40px);
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          grid-template-rows: repeat(3, auto);
+          gap: var(--gap);
+          margin: 0 auto;
+          align-content: center;
+          position: absolute;
+          top: 50%; left: 50%;
+          translate: -50% -50%;
+        }
+        @media (max-width: 640px) {
+          .moments-grid { grid-template-columns: repeat(3, 1fr); --offset: -1; }
+          .moments-grid > .moments-layer:nth-of-type(1) { display: none; }
+        }
+        .moments-grid > .moments-layer {
+          display: grid; grid-column: 1 / -1; grid-row: 1 / -1;
+          grid-template-columns: subgrid; grid-template-rows: subgrid;
+        }
+        .moments-grid > .moments-layer:nth-of-type(1) div:nth-of-type(odd) { grid-column: 1; }
+        .moments-grid > .moments-layer:nth-of-type(1) div:nth-of-type(even) { grid-column: -2; }
+        .moments-grid > .moments-layer:nth-of-type(2) div:nth-of-type(odd) { grid-column: calc(2 + var(--offset)); }
+        .moments-grid > .moments-layer:nth-of-type(2) div:nth-of-type(even) { grid-column: calc(-3 - var(--offset)); }
+        .moments-grid > .moments-layer:nth-of-type(3) div:first-of-type { grid-column: calc(3 + var(--offset)); grid-row: 1; }
+        .moments-grid > .moments-layer:nth-of-type(3) div:last-of-type { grid-column: calc(3 + var(--offset)); grid-row: -1; }
+        .moments-grid img { width: 100%; aspect-ratio: 4 / 5; object-fit: cover; border-radius: 14px; display: block; }
+        .moments-grid .moments-scaler-cell { position: relative; grid-area: 2 / calc(3 + var(--offset)); }
+        .moments-scaler { z-index: 2; width: 100%; height: 100%; position: relative; }
+        .moments-scaler img, .moments-scaler > div {
+          position: absolute; top: 50%; left: 50%; translate: -50% -50%;
+          object-fit: cover; border-radius: 14px; width: 100%; height: 100%;
+        }
+      `}</style>
     </div>
   );
 }
-const carBtn = (side) => ({
-  position: "absolute", top: "50%", transform: "translateY(-50%)", [side]: 14,
-  width: 42, height: 42, borderRadius: 999, border: "none", background: "rgba(255,255,255,.9)",
-  cursor: "pointer", display: "grid", placeItems: "center",
-});
+
 
 /* ---------- PRAYER ---------- */
 /* Masjidal live prayer-times widget.
@@ -4534,9 +4664,8 @@ function Footer({ onAdmin, data, onNav }) {
             <button onClick={() => onNav?.("home")} style={{ display: "flex", alignItems: "center",
               gap: 12, background: "none", border: "none", padding: 0, cursor: "pointer",
               marginBottom: 14 }}>
-              <img src={`${import.meta.env.BASE_URL}logo.jpg`} alt="MSA at UW logo"
-                style={{ width: 44, height: 44, borderRadius: 11, objectFit: "cover",
-                  border: "1px solid rgba(201,182,136,.3)" }} />
+              <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
+                style={{ width: 44, height: 44, objectFit: "contain" }} />
               <span style={{ fontWeight: 800, fontSize: 17, color: "#fff", letterSpacing: "-.3px" }}>
                 MSA <span style={{ color: GOLD }}>UW</span>
               </span>
