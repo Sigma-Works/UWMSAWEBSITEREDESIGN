@@ -4,6 +4,9 @@ import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromU
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
 // a visitor actually scrolls near the Quad section.
 const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
+// Scroll-driven cherry-blossom canvas hero (270-frame sequence). Kept in its
+// own module so the frame-preload logic and canvas loop stay isolated.
+import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
 // Bold anime.js-driven hero: curtain intro, orchestrated headline reveal,
 // 3D cursor tilt on the medallion, magnetic CTAs. Self-contained — no
 // external files required beyond the animejs package itself.
@@ -13,7 +16,7 @@ import {
   ShoppingBag, Instagram, Facebook, MessageCircle, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
-  Sun, Moon, ChevronDown, Mail, Send, CalendarDays, LayoutGrid, Info, Search,
+  Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Info, Search,
   Settings, Camera
 } from "lucide-react";
 
@@ -50,36 +53,56 @@ const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-
 /* Nav is grouped so it stays readable as the site grows. Top-level items
    show on desktop; `children` render in a dropdown. On mobile everything
    flattens into one scrollable list. */
-const NAV = [
-  { id: "home", label: "Home" },
-  { id: "about", label: "About" },
-  { id: "prayer", label: "Prayer" },
-  { id: "events", label: "Events" },
-  {
-    label: "Community", children: [
-      { id: "programs", label: "Programs" },
-      { id: "board", label: "Board" },
-      { id: "islamic-house", label: "Islamic House" },
-      { id: "sponsors", label: "Sponsors" },
-    ],
-  },
-  {
-    label: "More", children: [
-      { id: "new-here", label: "New here?" },
-      { id: "announcements", label: "Announcements" },
-      { id: "connect", label: "Connect" },
-      { id: "instagram", label: "Instagram" },
-      { id: "merch", label: "Merch", external: true, href: MERCH_URL },
-    ],
-  },
-  { id: "donate", label: "Donate", cta: true },
+// ── Five-page structure ────────────────────────────────────────────────
+// Each page has a hash route (safe on GitHub Pages — no server rewrites),
+// a label for the nav, and the ordered list of section ids it renders.
+// Section components stay exactly as they were; only where they live moved.
+const PAGES = [
+  { route: "/",          label: "Home",      sections: ["home", "new-here", "moments", "announcements"] },
+  { route: "/about",     label: "About",     sections: ["about", "donate", "connect", "sponsors"] },
+  { route: "/prayer",    label: "Prayer",    sections: ["prayer", "islamic-house"] },
+  { route: "/events",    label: "Events",    sections: ["events", "stats", "programs"] },
+  { route: "/community", label: "Community", sections: ["board", "instagram", "quad", "mailing"] },
 ];
 
-// Flat list of in-page section ids, used by the scroll spy.
-const SECTION_IDS = NAV.flatMap((n) =>
-  n.children ? n.children.filter((c) => !c.external).map((c) => c.id)
-             : (n.id ? [n.id] : [])
-);
+// Top-level nav: the five pages, an external Merch link, and the Donate CTA
+// (Donate lives on /about but the CTA jumps straight to its section).
+const NAV = [
+  ...PAGES.map((p) => ({ route: p.route, label: p.label })),
+  { label: "Merch", external: true, href: MERCH_URL },
+  { route: "/about", section: "donate", label: "Donate", cta: true },
+];
+
+// route → page lookup, and the set of in-page section ids per page (used by
+// the scroll spy so the correct nav item highlights on the active page).
+const ROUTE_TO_PAGE = Object.fromEntries(PAGES.map((p) => [p.route, p]));
+const SECTION_TO_ROUTE = {};
+PAGES.forEach((p) => p.sections.forEach((s) => { SECTION_TO_ROUTE[s] = p.route; }));
+
+/* Normalise a raw location.hash into one of our known routes. Anything
+   unrecognised falls back to "/". Accepts "#/about", "/about", "about". */
+function routeFromHash(hash) {
+  let h = (hash || "").replace(/^#/, "").trim();
+  if (!h) return "/";
+  if (!h.startsWith("/")) h = "/" + h;
+  // strip a trailing #section anchor if someone linked /about#donate via hash
+  return ROUTE_TO_PAGE[h] ? h : "/";
+}
+
+/* Hash router hook. Returns the current route and a navigate(route, section?)
+   that updates the hash and (optionally) scrolls to a section on the target
+   page after it renders. */
+function useHashRoute() {
+  const [route, setRoute] = useState(() =>
+    typeof window === "undefined" ? "/" : routeFromHash(window.location.hash)
+  );
+  useEffect(() => {
+    const onHash = () => setRoute(routeFromHash(window.location.hash));
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  return [route, setRoute];
+}
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -957,7 +980,7 @@ function Counter({ to = 100, suffix = "", duration = 1600, label }) {
 /* ── Stats band — dark strip with counting numbers ──────────────────── */
 function StatsBand({ stats }) {
   return (
-    <section style={{ position: "relative", overflow: "hidden", background: INK,
+    <section id="stats" style={{ position: "relative", overflow: "hidden", background: INK,
       padding: "72px 20px" }}>
       <AmbientGlow subtle />
       <div aria-hidden="true" style={{ position: "absolute", top: "-30%", left: "-4%",
@@ -1001,14 +1024,6 @@ const seed = {
     text: "Board applications for 2026–27 are open — deadline November 14.",
     linkLabel: "Apply now",
     href: "",
-  },
-  // ── Hero background video ─────────────────────────────────────────────
-  // Drop a file in public/ (e.g. public/hero.mp4) and put its name here.
-  // Leave `src` blank and the hero keeps its gradient — nothing breaks.
-  heroVideo: {
-    src: "",           // e.g. "hero.mp4"
-    poster: "",        // e.g. "hero-poster.jpg" — shown while the video loads
-    dim: 0.55,         // 0–1, how much to darken the footage for text contrast
   },
   // ── Mailing list ──────────────────────────────────────────────────────
   mailing: {
@@ -1111,7 +1126,10 @@ const seed = {
   // photo gallery); each renders via Instagram's own oEmbed widget, no API
   // keys required. `handle` powers the "Follow us" link/fallback.
   instagram: {
-    handle: "",
+    handle: "msauw",
+    // Live embeds: paste permalinks in the admin (Community → Instagram).
+    // When empty, the section shows the live @msauw profile embed as a
+    // fallback so the feed is never a placeholder block.
     posts: [],
   },
   // ── Contact ──────────────────────────────────────────────────────────
@@ -1250,7 +1268,7 @@ function mergeContent(base, saved) {
   const out = { ...base, ...saved };
   for (const key of ["hero", "sections", "prayerTimes", "events", "about",
                      "islamicHouse", "contact", "donate", "eventsExtra",
-                     "bar", "heroVideo", "mailing"]) {
+                     "bar", "mailing"]) {
     if (base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
       const savedVal = saved?.[key];
       if (savedVal && typeof savedVal === "object" && !Array.isArray(savedVal)) {
@@ -1274,6 +1292,9 @@ export default function App() {
   const [data, setData] = useState(seed);
   const [menuOpen, setMenuOpen] = useState(false);
   const [active, setActive] = useState("home");
+  // Current page (hash route). Section components are grouped onto pages
+  // by PAGES above; this decides which group renders.
+  const [route, setRoute] = useHashRoute();
   const [adminOpen, setAdminOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -1423,15 +1444,58 @@ export default function App() {
     return res;
   }, []);
 
-  const scrollTo = useCallback((id) => {
+  // Navigate to a section, crossing pages when needed. Accepts a bare
+  // section id ("events"), a page route ("/about"), or "/about#donate".
+  // Same-page → smooth-scrolls; cross-page → switches route, then scrolls
+  // once the new page has painted.
+  const navigateTo = useCallback((target) => {
     setMenuOpen(false);
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, []);
+    if (!target) return;
 
-  // scroll spy
+    // route with optional section: "/about" or "/about#donate"
+    if (target.startsWith("/")) {
+      const [r, sec] = target.split("#");
+      const dest = ROUTE_TO_PAGE[r] ? r : "/";
+      if (window.location.hash.replace(/^#/, "") !== dest) {
+        window.location.hash = dest;      // triggers hashchange → setRoute
+        setRoute(dest);
+      }
+      // scroll after the page renders (or straight to top if no section)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (sec) {
+          const el = document.getElementById(sec);
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      }));
+      return;
+    }
+
+    // bare section id — find which page owns it
+    const destRoute = SECTION_TO_ROUTE[target] || "/";
+    if (destRoute !== route) {
+      window.location.hash = destRoute;
+      setRoute(destRoute);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el = document.getElementById(target);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }));
+    } else {
+      const el = document.getElementById(target);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [route, setRoute]);
+  // Back-compat alias — many sections call onNav(id).
+  const scrollTo = navigateTo;
+
+  // On every route change, jump to the top of the new page.
+  useEffect(() => { window.scrollTo({ top: 0 }); setActive(route); }, [route]);
+
+  // scroll spy — only the current page's sections
   useEffect(() => {
-    const ids = SECTION_IDS;
+    const page = ROUTE_TO_PAGE[route];
+    const ids = page ? page.sections : [];
     const obs = new IntersectionObserver(
       (entries) => {
         entries.forEach((e) => { if (e.isIntersecting) setActive(e.target.id); });
@@ -1440,7 +1504,7 @@ export default function App() {
     );
     ids.forEach((id) => { const el = document.getElementById(id); if (el) obs.observe(el); });
     return () => obs.disconnect();
-  }, [loaded]);
+  }, [loaded, route]);
 
   return (
     <MotionPrefsContext.Provider value={motionPrefs}>
@@ -1460,22 +1524,8 @@ export default function App() {
       <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)}
         data={data} onNav={scrollTo} />
       <main>
-        <HomeSection data={data} onNav={scrollTo} curtainDone={curtainDone} />
-        <NewHereSection data={data} />
-        <AnnouncementsSection data={data} />
-        <DonateSection data={data} />
-        <AboutSection data={data} />
-        <QuadSection data={data} />
-        <PrayerSection data={data} />
-        <IslamicHouseSection data={data} />
-        <SponsorsSection data={data} />
-        <EventsSection data={data} />
-        <StatsBand stats={data.stats || []} />
-        <ProgramsSection data={data} />
-        <BoardSection data={data} />
-        <InstagramSection data={data} />
-        <ConnectSection data={data} />
-        <MailingList data={data} />
+        <PageRouter route={route} data={data} onNav={scrollTo}
+          curtainDone={curtainDone} reduced={effectiveReduced} />
       </main>
       <Footer onAdmin={() => setAdminOpen(true)} data={data} onNav={scrollTo} />
       {adminOpen && (
@@ -1489,6 +1539,36 @@ export default function App() {
     </div>
     </MotionPrefsContext.Provider>
   );
+}
+
+/* ── Page router ─────────────────────────────────────────────────────────
+   Renders the section components that belong to the active route. Section
+   ids map to components here; the ordering per page lives in PAGES above. */
+function PageRouter({ route, data, onNav, curtainDone, reduced }) {
+  const render = (id) => {
+    switch (id) {
+      case "home":          return <HomeSection key="home" data={data} onNav={onNav} curtainDone={curtainDone} reduced={reduced} />;
+      case "new-here":      return <NewHereSection key="new-here" data={data} />;
+      case "moments":       return <MomentsSection key="moments" data={data} />;
+      case "announcements": return <AnnouncementsSection key="announcements" data={data} />;
+      case "about":         return <AboutSection key="about" data={data} />;
+      case "donate":        return <DonateSection key="donate" data={data} />;
+      case "connect":       return <ConnectSection key="connect" data={data} />;
+      case "sponsors":      return <SponsorsSection key="sponsors" data={data} />;
+      case "prayer":        return <PrayerSection key="prayer" data={data} />;
+      case "islamic-house": return <IslamicHouseSection key="islamic-house" data={data} />;
+      case "events":        return <EventsSection key="events" data={data} />;
+      case "stats":         return <StatsBand key="stats" stats={data.stats || []} />;
+      case "programs":      return <ProgramsSection key="programs" data={data} />;
+      case "board":         return <BoardSection key="board" data={data} />;
+      case "instagram":     return <InstagramSection key="instagram" data={data} />;
+      case "quad":          return <QuadSection key="quad" data={data} />;
+      case "mailing":       return <MailingList key="mailing" data={data} />;
+      default:              return null;
+    }
+  };
+  const page = ROUTE_TO_PAGE[route] || ROUTE_TO_PAGE["/"];
+  return <>{page.sections.map(render)}</>;
 }
 
 function StyleTag() {
@@ -1751,7 +1831,7 @@ function StyleTag() {
    carousel spin), plus two finer switches for the rosary wheel's neon glow
    and the hover ripple specifically, for anyone who wants most motion but
    not those two. Choices persist across visits via MotionPrefsContext. */
-function SettingsMenu() {
+function SettingsMenu({ dark, onToggleDark, petals, onTogglePetals }) {
   const { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff } = useMotionPrefs();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -1798,6 +1878,14 @@ function SettingsMenu() {
         <div role="menu" style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, width: 268,
           background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14,
           boxShadow: "0 18px 40px rgba(0,0,0,.24)", padding: "8px 14px", zIndex: 60 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.2px", textTransform: "uppercase",
+            color: "var(--text-faint)", padding: "8px 2px 2px" }}>Appearance</div>
+          <ToggleRow label="Dark mode" hint="Switch between the light and dark themes"
+            checked={!!dark} onToggle={() => onToggleDark?.()} />
+          <ToggleRow label="Falling petals" hint="Cherry-blossom petals drifting over the page"
+            checked={!!petals} onToggle={() => onTogglePetals?.()} />
+
+          <div style={{ height: 1, background: "var(--border)", margin: "6px 0" }} />
           <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.2px", textTransform: "uppercase",
             color: "var(--text-faint)", padding: "8px 2px 2px" }}>Display settings</div>
           <ToggleRow label="Reduce motion" hint="Turns off spinning, parallax, and intro animations"
@@ -1861,10 +1949,15 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
     return () => { document.body.style.overflow = prev; };
   }, [menuOpen]);
 
-  const groupActive = (item) =>
-    item.children?.some((c) => c.id === active);
-
-  const go = (id) => { setOpenMenu(null); setMenuOpen(false); onNav(id); };
+  // active is the current route ("/", "/about", …). A nav item is active
+  // when its route matches (the Donate CTA never highlights).
+  const itemActive = (item) => !item.cta && item.route && item.route === active;
+  // Navigate: pages go to their route; the Donate CTA jumps to its section.
+  const go = (item) => {
+    setOpenMenu(null); setMenuOpen(false);
+    if (item.external) { window.open(item.href, "_blank", "noopener"); return; }
+    onNav(item.section ? `${item.route}#${item.section}` : item.route);
+  };
 
   return (
     <>
@@ -1886,7 +1979,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
 
       <nav style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px",
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <button className="btn logomark" onClick={() => go("home")} aria-label="MSA at UW — home"
+        <button className="btn logomark" onClick={() => onNav("/")} aria-label="MSA at UW — home"
           style={{ display: "flex", alignItems: "center", gap: 10, background: "none",
             border: "none", cursor: "pointer", padding: 0, height: 44, flexShrink: 0 }}>
           <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
@@ -1898,47 +1991,19 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
 
         {/* ── Desktop ─────────────────────────────────────────────────── */}
         <div className="desk" style={{ display: "flex", alignItems: "center", gap: 2 }}>
-          {NAV.map((item) => {
-            if (item.children) {
-              const isOpen = openMenu === item.label;
+          {NAV.map((item, i) => {
+            if (item.external) {
               return (
-                <div key={item.label} style={{ position: "relative" }}>
-                  <button className="navlink"
-                    onClick={() => setOpenMenu(isOpen ? null : item.label)}
-                    aria-expanded={isOpen} aria-haspopup="true"
-                    style={{ ...navLink(groupActive(item)), display: "inline-flex",
-                      alignItems: "center", gap: 5 }}>
-                    {item.label}
-                    <ChevronDown size={13} style={{
-                      transform: isOpen ? "rotate(180deg)" : "none",
-                      transition: `transform ${DUR.fast}ms ${EASE.out}` }} />
-                  </button>
-                  <div role="menu" style={{
-                    position: "absolute", top: "calc(100% + 8px)", left: 0, minWidth: 190,
-                    background: "var(--surface)", border: "1px solid var(--border)",
-                    borderRadius: 14, padding: 6, boxShadow: "var(--card-shadow-hover)",
-                    transformOrigin: "top left",
-                    opacity: isOpen ? 1 : 0,
-                    transform: isOpen ? "translate3d(0,0,0) scale(1)" : "translate3d(0,-6px,0) scale(.97)",
-                    pointerEvents: isOpen ? "auto" : "none",
-                    transition: `opacity ${DUR.fast}ms ${EASE.out}, transform ${DUR.fast}ms ${EASE.out}`,
-                  }}>
-                    {item.children.map((c) => c.external ? (
-                      <a key={c.id} href={c.href} target="_blank" rel="noopener noreferrer"
-                        role="menuitem" onClick={() => setOpenMenu(null)} style={dropItem(false)}>
-                        {c.label} <ExternalLink size={12} />
-                      </a>
-                    ) : (
-                      <button key={c.id} role="menuitem" onClick={() => go(c.id)}
-                        style={dropItem(active === c.id)}>{c.label}</button>
-                    ))}
-                  </div>
-                </div>
+                <a key={`ext-${i}`} href={item.href} target="_blank" rel="noopener noreferrer"
+                  className="navlink" style={{ ...navLink(false), display: "inline-flex",
+                    alignItems: "center", gap: 5, textDecoration: "none" }}>
+                  {item.label} <ExternalLink size={12} />
+                </a>
               );
             }
             if (item.cta) {
               return (
-                <button key={item.id} className="btn" onClick={() => go(item.id)}
+                <button key={`cta-${i}`} className="btn" onClick={() => go(item)}
                   style={{ marginLeft: 6, padding: "9px 18px", borderRadius: 999,
                     border: "none", cursor: "pointer", fontFamily: "inherit",
                     fontSize: 14, fontWeight: 700, color: "#2c2418",
@@ -1950,8 +2015,9 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
               );
             }
             return (
-              <button key={item.id} className="navlink" onClick={() => go(item.id)}
-                style={navLink(active === item.id)}>{item.label}</button>
+              <button key={item.route} className="navlink" onClick={() => go(item)}
+                aria-current={itemActive(item) ? "page" : undefined}
+                style={navLink(itemActive(item))}>{item.label}</button>
             );
           })}
 
@@ -1959,26 +2025,9 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             title="Search (⌘K)" style={iconBtn}>
             <Search size={16} color="var(--accent)" />
           </button>
-          <button className="btn" onClick={onTogglePetals} aria-pressed={!!petals}
-            title={petals ? "Turn off falling petals" : "Turn on falling petals"}
-            aria-label={petals ? "Turn off falling petals" : "Turn on falling petals"}
-            style={iconBtn}>
-            <span style={{ display: "grid", placeItems: "center",
-              opacity: petals ? 1 : .45,
-              transform: petals ? "rotate(0deg) scale(1)" : "rotate(-18deg) scale(.9)",
-              transition: `transform ${DUR.base}ms ${EASE.spring}, opacity ${DUR.fast}ms ${EASE.out}` }}>
-              <PetalIcon size={17} color="var(--accent)" />
-            </span>
-          </button>
-          <button className="btn themetoggle" onClick={onToggleDark}
-            aria-label={dark ? "Switch to light mode" : "Switch to dark mode"} style={iconBtn}>
-            <span style={{ display: "grid", placeItems: "center",
-              transform: dark ? "rotate(0deg)" : "rotate(-90deg) scale(.8)",
-              transition: `transform ${DUR.base}ms ${EASE.spring}` }}>
-              {dark ? <Sun size={16} color="var(--accent)" /> : <Moon size={16} color="var(--accent)" />}
-            </span>
-          </button>
-          <SettingsMenu />
+          {/* Theme + petals now live inside the consolidated Settings menu. */}
+          <SettingsMenu dark={dark} onToggleDark={onToggleDark}
+            petals={petals} onTogglePetals={onTogglePetals} />
           <button className="btn" onClick={onAdmin} aria-label="Admin login" style={iconBtn}>
             <Lock size={16} color="var(--accent)" />
           </button>
@@ -2021,30 +2070,18 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         zIndex: 49,
       }}>
         <div style={{ padding: "10px 20px calc(28px + env(safe-area-inset-bottom, 0px))" }}>
-          {NAV.map((item) => {
-            if (item.children) {
+          {NAV.map((item, i) => {
+            if (item.external) {
               return (
-                <div key={item.label} style={{ marginTop: 6 }}>
-                  <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.4px",
-                    textTransform: "uppercase", color: "var(--text-faint)",
-                    padding: "12px 8px 4px" }}>{item.label}</div>
-                  {item.children.map((c) => c.external ? (
-                    <a key={c.id} href={c.href} target="_blank" rel="noopener noreferrer"
-                      onClick={() => setMenuOpen(false)} style={mobLink}>
-                      {c.label} <ExternalLink size={14} />
-                    </a>
-                  ) : (
-                    <button key={c.id} onClick={() => go(c.id)}
-                      style={{ ...mobLink, color: active === c.id ? "var(--accent)" : "var(--nav-idle)" }}>
-                      {c.label}
-                    </button>
-                  ))}
-                </div>
+                <a key={`mext-${i}`} href={item.href} target="_blank" rel="noopener noreferrer"
+                  onClick={() => setMenuOpen(false)} style={mobLink}>
+                  {item.label} <ExternalLink size={14} />
+                </a>
               );
             }
             if (item.cta) {
               return (
-                <button key={item.id} onClick={() => go(item.id)}
+                <button key={`mcta-${i}`} onClick={() => go(item)}
                   style={{ ...mobLink, marginTop: 14, justifyContent: "center",
                     borderRadius: 12, borderBottom: "none", color: "#2c2418",
                     background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)`, fontWeight: 700 }}>
@@ -2053,8 +2090,9 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
               );
             }
             return (
-              <button key={item.id} onClick={() => go(item.id)}
-                style={{ ...mobLink, color: active === item.id ? "var(--accent)" : "var(--nav-idle)" }}>
+              <button key={item.route} onClick={() => go(item)}
+                aria-current={itemActive(item) ? "page" : undefined}
+                style={{ ...mobLink, color: itemActive(item) ? "var(--accent)" : "var(--nav-idle)" }}>
                 {item.label}
               </button>
             );
@@ -2064,6 +2102,9 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
           <button onClick={() => { setMenuOpen(false); onSearch?.(); }} style={mobLink}>
             <Search size={15} /> Search
           </button>
+          <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.4px",
+            textTransform: "uppercase", color: "var(--text-faint)",
+            padding: "12px 8px 4px" }}>Appearance</div>
           <button onClick={onToggleDark} style={mobLink}>
             {dark ? <Sun size={15} /> : <Moon size={15} />} {dark ? "Light mode" : "Dark mode"}
           </button>
@@ -2103,15 +2144,6 @@ const iconBtn = {
   borderRadius: 10, border: "1px solid var(--border-strong)",
   background: "var(--surface)", cursor: "pointer", flexShrink: 0,
 };
-
-const dropItem = (on) => ({
-  display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left",
-  padding: "10px 12px", borderRadius: 9, border: "none", cursor: "pointer",
-  fontFamily: "inherit", fontSize: 14, fontWeight: 600, textDecoration: "none",
-  background: on ? "var(--nav-active-bg)" : "transparent",
-  color: on ? "var(--accent)" : "var(--nav-idle)",
-  transition: `background ${DUR.fast}ms ${EASE.out}, color ${DUR.fast}ms ${EASE.out}`,
-});
 
 const navLink = (on) => ({
   padding: "9px 14px", background: on ? "var(--nav-active-bg)" : "transparent",
@@ -2511,9 +2543,12 @@ function RippleField({ reduced }) {
   );
 }
 
-function HomeSection({ data, onNav, curtainDone }) {
-  const reduced = useReducedMotion();
+function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
+  const reducedHook = useReducedMotion();
+  const reduced = reducedProp ?? reducedHook;
   const { glowOff } = useMotionPrefs();
+  // Fades the overlaid scroll-hero title as the bloom sequence scrubs past.
+  const [heroP, setHeroP] = useState(0);
   const sectionRef = useRef(null);
   const stageRef = useRef(null);
   const glowARef = useRef(null);
@@ -2589,10 +2624,49 @@ function HomeSection({ data, onNav, curtainDone }) {
 
   return (
     <>
+      {/* ── Scroll-driven cherry-blossom hero ──────────────────────────────
+          Apple-style: a pinned canvas scrubs a 270-frame bloom sequence as
+          the visitor scrolls, then hands off to the branded home hero below.
+          Collapses to a single static poster under reduced-motion. */}
+      <CanvasHeroSequence reduced={reduced} onProgress={setHeroP}>
+        <div style={{ textAlign: "center", maxWidth: 820,
+          // fade the intro title out over the first third of the scrub
+          opacity: reduced ? 1 : Math.max(0, 1 - heroP * 2.4),
+          transform: reduced ? "none" : `translate3d(0, ${heroP * -40}px, 0)`,
+          transition: "opacity 120ms linear",
+          pointerEvents: "none" }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.18)",
+            border: "1px solid rgba(201,182,136,.45)", marginBottom: 22 }}>
+            <PetalIcon size={15} color={GOLD} />
+            <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: ".6px",
+              textTransform: "uppercase", color: "rgba(255,255,255,.85)" }}>
+              {data.hero.kicker ?? seed.hero.kicker}
+            </span>
+          </div>
+          <h1 style={{ margin: 0, color: "#fff", fontWeight: 800,
+            fontSize: "clamp(34px,6vw,68px)", lineHeight: 1.05,
+            textShadow: "0 2px 30px rgba(0,0,0,.4)" }}>
+            {data.hero.title ?? seed.hero.title}
+          </h1>
+          <p style={{ marginTop: 20, color: "rgba(255,255,255,.86)",
+            fontSize: "clamp(15px,2vw,20px)", lineHeight: 1.6, maxWidth: 620,
+            marginLeft: "auto", marginRight: "auto" }}>
+            {data.hero.mission}
+          </p>
+          {!reduced && (
+            <div style={{ marginTop: 34, opacity: Math.max(0, 1 - heroP * 3),
+              fontSize: 12.5, letterSpacing: "1.5px", textTransform: "uppercase",
+              color: "rgba(255,255,255,.6)" }}>
+              Scroll to watch it bloom
+            </div>
+          )}
+        </div>
+      </CanvasHeroSequence>
+
       <section id="home" ref={sectionRef} className="grain vignette" style={{ position: "relative", overflow: "hidden",
-        background: GRAD_DEEP,   // stays as the base layer when no video is set
+        background: GRAD_DEEP,
         color: "#fff", padding: "104px 20px 0" }}>
-        <HeroVideo config={data.heroVideo} />
         <AmbientGlow />
         <PatternField />
         {/* bold gold + violet light blooms — bigger and more saturated than
@@ -2701,7 +2775,7 @@ function HomeSection({ data, onNav, curtainDone }) {
                 background: `linear-gradient(120deg, ${PURPLE}, #E8A9D6)` }}>
               Get Involved
             </button></Magnetic>
-            <Magnetic><button className="btn" onClick={() => onNav("gallery")}
+            <Magnetic><button className="btn" onClick={() => onNav("moments")}
               style={{ padding: "14px 30px", borderRadius: 12, fontWeight: 700, fontSize: 15.5,
                 background: "transparent", color: "#fff", cursor: "pointer",
                 border: "1px solid rgba(232,169,214,.5)" }}>
@@ -2722,7 +2796,7 @@ function HomeSection({ data, onNav, curtainDone }) {
               {data.hero.kicker ?? seed.hero.kicker}</span>
           </button>
         </div>
-        <ScrollCue onClick={() => onNav("gallery")} />
+        <ScrollCue onClick={() => onNav("moments")} />
         {/* girih band along the base of the hero */}
         <div style={{ position: "relative" }}>
           <GirihBand color="rgba(183,165,122,.45)" height={54} opacity={1} unit={54} />
@@ -2733,19 +2807,23 @@ function HomeSection({ data, onNav, curtainDone }) {
           }
         `}</style>
       </section>
-
-      {/* Gallery */}
-      <Band id="gallery" lattice decor="left" rosettes="left" light lightTone="violet" lightAt="top-left" floats={<>
-        <Parallax speed={.12} float style={{ top: 20, right: "8%" }}>
-          <Star8 size={64} color="var(--rosette)" opacity={.10} /></Parallax>
-        <Parallax speed={-.08} float style={{ bottom: 40, left: "4%" }}>
-          <Star8 size={38} color={GOLD} opacity={.16} /></Parallax>
-      </>}>
-        <SectionCopy data={data} sectionKey="gallery" />
-        <Gallery items={data.gallery} />
-      </Band>
-
     </>
+  );
+}
+
+/* ── Moments from the year — the highlight carousel, now its own section
+   so it can sit on the Home page directly under the hero/new-here. */
+function MomentsSection({ data }) {
+  return (
+    <Band id="moments" lattice decor="left" rosettes="left" light lightTone="violet" lightAt="top-left" floats={<>
+      <Parallax speed={.12} float style={{ top: 20, right: "8%" }}>
+        <Star8 size={64} color="var(--rosette)" opacity={.10} /></Parallax>
+      <Parallax speed={-.08} float style={{ bottom: 40, left: "4%" }}>
+        <Star8 size={38} color={GOLD} opacity={.16} /></Parallax>
+    </>}>
+      <SectionCopy data={data} sectionKey="gallery" />
+      <Gallery items={data.gallery} />
+    </Band>
   );
 }
 
@@ -3610,6 +3688,7 @@ function MonthCalendar({ events }) {
   const today = new Date();
   const [cursor, setCursor] = useState({ y: today.getFullYear(), m: today.getMonth() });
   const [picked, setPicked] = useState(null);
+  const [activeCat, setActiveCat] = useState("all");   // category filter
   const reduced = useReducedMotion();
   // Animation refs/state — ported from the spring-based reveal language in
   // https://github.com/yassir-jeraidi/full-calendar (weekday header +
@@ -3622,15 +3701,34 @@ function MonthCalendar({ events }) {
   const dirRef = useRef(0); // -1 = went to previous month, 1 = next, 0 = initial mount
   const mountedRef = useRef(false);
 
+  // Distinct categories present across all events (for the filter chips).
+  const categories = React.useMemo(() => {
+    const set = new Set();
+    (events || []).forEach((e) => { if (e.category) set.add(e.category); });
+    return Array.from(set).sort();
+  }, [events]);
+
+  // Reset the filter if the active category disappears from the data.
+  useEffect(() => {
+    if (activeCat !== "all" && !categories.includes(activeCat)) setActiveCat("all");
+  }, [categories, activeCat]);
+
+  // Apply the active category filter before indexing.
+  const filteredEvents = React.useMemo(() =>
+    activeCat === "all"
+      ? (events || [])
+      : (events || []).filter((e) => e.category === activeCat),
+    [events, activeCat]);
+
   // Index events by YYYY-MM-DD for O(1) lookup per cell.
   const byDate = React.useMemo(() => {
     const map = {};
-    (events || []).forEach((e) => {
+    filteredEvents.forEach((e) => {
       if (!e.date) return;
       (map[e.date] = map[e.date] || []).push(e);
     });
     return map;
-  }, [events]);
+  }, [filteredEvents]);
 
   const cells = monthMatrix(cursor.y, cursor.m);
   const key = (d) =>
@@ -3720,6 +3818,27 @@ function MonthCalendar({ events }) {
         <button className="btn" onClick={() => shift(1)} aria-label="Next month"
           style={boardNavBtn}><ChevronRight size={17} color="var(--accent)" /></button>
       </div>
+
+      {/* Category filter chips — only shown when events carry categories. */}
+      {categories.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, padding: "12px 16px 2px" }}>
+          {["all", ...categories].map((c) => {
+            const on = activeCat === c;
+            return (
+              <button key={c} onClick={() => { setActiveCat(c); setPicked(null); }}
+                aria-pressed={on}
+                style={{ padding: "5px 13px", borderRadius: 999, fontFamily: "inherit",
+                  fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                  border: on ? "1px solid transparent" : "1px solid var(--border-strong)",
+                  background: on ? PURPLE : "transparent",
+                  color: on ? "#fff" : "var(--text-soft)",
+                  transition: `background ${DUR.fast}ms ${EASE.out}, color ${DUR.fast}ms ${EASE.out}` }}>
+                {c === "all" ? "All events" : c}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div style={{ padding: 12 }}>
         <div ref={headerRef} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4,
@@ -4005,7 +4124,11 @@ function AnnouncementBar({ bar, onNav }) {
     try { localStorage.setItem("msa-bar", sig); } catch {}
   };
 
-  const isInternal = bar.href && bar.href.startsWith("#");
+  // Internal links: "#section", "/route", or "/route#section".
+  const isInternal = bar.href && (bar.href.startsWith("#") || bar.href.startsWith("/"));
+  const internalTarget = bar.href
+    ? (bar.href.startsWith("#") ? bar.href.slice(1) : bar.href)
+    : "";
   const label = bar.linkLabel || "";
 
   return (
@@ -4019,7 +4142,7 @@ function AnnouncementBar({ bar, onNav }) {
         <span>{bar.text}</span>
         {label && bar.href && (
           isInternal ? (
-            <button onClick={() => onNav?.(bar.href.slice(1))} className="barlink">
+            <button onClick={() => onNav?.(internalTarget)} className="barlink">
               {label} <ChevronRight size={13} />
             </button>
           ) : (
@@ -4044,62 +4167,8 @@ function AnnouncementBar({ bar, onNav }) {
    hero until footage exists. Muted + playsInline + autoplay is the only
    combination browsers allow to start on its own. Never loads on
    reduced-motion or save-data connections. */
-function HeroVideo({ config }) {
-  const reduced = useReducedMotion();
-  const [ready, setReady] = useState(false);
-  const [allowed, setAllowed] = useState(false);
-  const ref = useRef(null);
-
-  const src = config?.src || "";
-  const poster = config?.poster || "";
-  const dim = typeof config?.dim === "number" ? config.dim : 0.55;
-
-  useEffect(() => {
-    if (!src || reduced) { setAllowed(false); return; }
-    // Respect data-saver and very slow connections, and skip decoding an
-    // autoplaying background video on small/phone-width screens — it's one
-    // of the biggest single sources of mobile jank, and the poster image
-    // (or gradient) reads just as well at that size.
-    const c = navigator.connection;
-    const slow = c && (c.saveData || /(^|-)2g$/.test(c.effectiveType || ""));
-    const narrow = window.innerWidth < 640;
-    setAllowed(!slow && !narrow);
-  }, [src, reduced]);
-
-  if (!src) return null;
-
-  const url = (p) => (/^https?:\/\//i.test(p) ? p : `${import.meta.env.BASE_URL}${p}`);
-
-  return (
-    <div aria-hidden="true" style={{ position: "absolute", inset: 0, overflow: "hidden",
-      zIndex: 0, pointerEvents: "none" }}>
-      {poster && (
-        <img src={url(poster)} alt=""
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
-            objectFit: "cover",
-            opacity: ready ? 0 : 1,
-            transition: `opacity 900ms ${EASE.outSoft}` }} />
-      )}
-      {allowed && (
-        <video ref={ref} autoPlay muted loop playsInline preload="metadata"
-          poster={poster ? url(poster) : undefined}
-          onCanPlay={() => setReady(true)}
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
-            objectFit: "cover",
-            opacity: ready ? 1 : 0,
-            transform: ready ? "scale(1)" : "scale(1.04)",
-            transition: `opacity 1200ms ${EASE.outSoft}, transform 2200ms ${EASE.outSoft}` }}>
-          <source src={url(src)} type="video/mp4" />
-        </video>
-      )}
-      {/* Scrim — keeps headline contrast regardless of how bright the footage is */}
-      <div style={{ position: "absolute", inset: 0,
-        background: `linear-gradient(180deg, rgba(20,17,24,${(dim * 0.9).toFixed(2)}) 0%, rgba(20,17,24,${(dim * 0.62).toFixed(2)}) 45%, rgba(20,17,24,${Math.min(dim + 0.24, 0.95).toFixed(2)}) 100%)` }} />
-      <div style={{ position: "absolute", inset: 0,
-        background: `radial-gradient(ellipse at 50% 45%, transparent 0%, rgba(20,17,24,.42) 78%)` }} />
-    </div>
-  );
-}
+/* HeroVideo removed — the scroll-driven CanvasHeroSequence replaces the
+   old background-video hero. See src/components/CanvasHeroSequence.jsx. */
 
 /* ── Mailing list ───────────────────────────────────────────────────────
    Saves straight to Supabase, or links out if an external form is set. */
@@ -4111,13 +4180,43 @@ function MailingList({ data }) {
   const [status, setStatus] = useState("Current student");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);   // {ok, text}
+  const [hp, setHp] = useState("");        // honeypot — real users never fill this
 
   if (!cfg?.on) return null;
 
   const submit = async (e) => {
     e?.preventDefault?.();
-    setMsg(null); setBusy(true);
-    const res = await subscribe({ firstName: first, lastName: last, email, status });
+    setMsg(null);
+
+    // Honeypot: bots fill hidden fields. If it's filled, silently "succeed"
+    // without hitting the backend.
+    if (hp) { setMsg({ ok: true, text: "You're in. Look out for the next one." }); return; }
+
+    // Basic input validation before touching the network.
+    const emailClean = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailClean)) {
+      setMsg({ ok: false, text: "Please enter a valid email address." }); return;
+    }
+    if (first.length > 80 || last.length > 80 || email.length > 160) {
+      setMsg({ ok: false, text: "That's a bit long — please shorten your entry." }); return;
+    }
+
+    // Lightweight client-side rate limit: max 3 attempts per rolling minute,
+    // tracked in localStorage. Stops accidental double-submits and casual abuse
+    // (the real guard is Supabase RLS + a unique index on email).
+    try {
+      const now = Date.now();
+      const hits = JSON.parse(localStorage.getItem("msa-ml-hits") || "[]")
+        .filter((t) => now - t < 60000);
+      if (hits.length >= 3) {
+        setMsg({ ok: false, text: "Too many attempts — please wait a minute and try again." });
+        return;
+      }
+      localStorage.setItem("msa-ml-hits", JSON.stringify([...hits, now]));
+    } catch {}
+
+    setBusy(true);
+    const res = await subscribe({ firstName: first, lastName: last, email: emailClean, status });
     setBusy(false);
     if (res.ok) {
       setMsg({ ok: true, text: res.already
@@ -4163,6 +4262,15 @@ function MailingList({ data }) {
               </>
             ) : (
               <form onSubmit={submit}>
+                {/* Honeypot — visually hidden, off-screen, not tabbable. Bots
+                    that auto-fill fields will trip it; humans never see it. */}
+                <div aria-hidden="true" style={{ position: "absolute", left: "-9999px",
+                  width: 1, height: 1, overflow: "hidden" }}>
+                  <label>Leave this field empty
+                    <input type="text" tabIndex={-1} autoComplete="off" value={hp}
+                      onChange={(e) => setHp(e.target.value)} />
+                  </label>
+                </div>
                 <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
                   <div>
                     <label style={lbl} htmlFor="ml-first">First name</label>
@@ -4658,32 +4766,11 @@ function IslamicHouseSection({ data }) {
           </div>
         </div>
 
-        {/* Right column: future building photo on top, "Visit" info card
-            underneath. The photo slot always renders — as the real image
-            once an admin adds one (Islamic House admin tab), or as a quiet
-            placeholder template until then — so the space is reserved and
-            the layout doesn't jump when a photo eventually gets added. */}
+        {/* Right column: the "Visit Islamic House" details card sits at the
+            top for stronger desktop balance against the long left column,
+            with the building photo underneath. */}
         <div style={{ display: "grid", gap: 20 }}>
           <Reveal variant="right" distance={26} delay={80} duration={DUR.slow}>
-            {h.futureImage ? (
-              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
-                aspectRatio: "4 / 3" }}>
-                <img src={h.futureImage} alt="Future Islamic House building" loading="lazy"
-                  decoding="async"
-                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-              </div>
-            ) : (
-              <div style={{ ...card, aspectRatio: "4 / 3", display: "grid", placeItems: "center",
-                gap: 8, textAlign: "center", padding: 20,
-                border: "1.5px dashed var(--border-strong)", background: "var(--surface-2)" }}>
-                <Camera size={26} color="var(--text-faint)" />
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-faint)" }}>
-                  Future building photo coming soon</div>
-              </div>
-            )}
-          </Reveal>
-
-          <Reveal variant="right" distance={26} delay={140} duration={DUR.slow}>
             <div style={{ ...card, padding: 0, overflow: "hidden" }}>
               <div style={{ background: GRAD_DEEP, color: "#fff", padding: "20px 22px",
                 position: "relative", overflow: "hidden" }}>
@@ -4731,6 +4818,27 @@ function IslamicHouseSection({ data }) {
                 </div>
               </div>
             </div>
+          </Reveal>
+
+          {/* Building photo — real image once an admin adds one, else a quiet
+              placeholder so the layout doesn't jump. */}
+          <Reveal variant="right" distance={26} delay={140} duration={DUR.slow}>
+            {h.futureImage ? (
+              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
+                aspectRatio: "4 / 3" }}>
+                <img src={h.futureImage} alt="Future Islamic House building" loading="lazy"
+                  decoding="async"
+                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              </div>
+            ) : (
+              <div style={{ ...card, aspectRatio: "4 / 3", display: "grid", placeItems: "center",
+                gap: 8, textAlign: "center", padding: 20,
+                border: "1.5px dashed var(--border-strong)", background: "var(--surface-2)" }}>
+                <Camera size={26} color="var(--text-faint)" />
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-faint)" }}>
+                  Future building photo coming soon</div>
+              </div>
+            )}
           </Reveal>
         </div>
       </div>
@@ -5079,7 +5187,7 @@ function InstagramSection({ data }) {
           </a>
         </Reveal>
       )}
-      {posts.length > 0 && (
+      {posts.length > 0 ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
           gap: 20, justifyItems: "center" }}>
           {posts.map((p, i) => (
@@ -5088,8 +5196,54 @@ function InstagramSection({ data }) {
             </Reveal>
           ))}
         </div>
-      )}
+      ) : handle ? (
+        /* No individual permalinks set → embed the live @handle profile so
+           the section is always a real feed, never a placeholder block. */
+        <Reveal variant="rise" distance={18}>
+          <InstagramProfileEmbed handle={handle} />
+        </Reveal>
+      ) : null}
     </Band>
+  );
+}
+
+/* Live profile feed embed. Instagram's own embed.js renders a permalink
+   blockquote; for a profile we use a lightweight, privacy-respecting
+   iframe to the public profile-embed grid, with a graceful link-out card
+   if the embed is blocked. */
+function InstagramProfileEmbed({ handle }) {
+  const [failed, setFailed] = useState(false);
+  const clean = handle.replace(/^@/, "").trim();
+  const profileUrl = `https://www.instagram.com/${clean}/`;
+  const embedSrc = `https://www.instagram.com/${clean}/embed`;
+
+  if (failed) {
+    return (
+      <a href={profileUrl} target="_blank" rel="noopener noreferrer" className="lift"
+        style={{ display: "block", maxWidth: 400, margin: "0 auto", padding: 28,
+          borderRadius: 16, textDecoration: "none", color: "var(--text)",
+          background: "var(--surface)", border: "1px solid var(--border)", textAlign: "center" }}>
+        <Instagram size={30} style={{ marginBottom: 10 }} />
+        <div style={{ fontWeight: 700, fontSize: 16 }}>@{clean}</div>
+        <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 6 }}>
+          View the latest posts on Instagram
+        </div>
+      </a>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 400, margin: "0 auto", width: "100%" }}>
+      <iframe
+        title={`Instagram — @${clean}`}
+        src={embedSrc}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        scrolling="no"
+        style={{ width: "100%", height: 480, border: "1px solid var(--border)",
+          borderRadius: 14, background: "#fff", overflow: "hidden" }}
+      />
+    </div>
   );
 }
 
@@ -5427,23 +5581,27 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
             <div style={{ width: 190, borderRight: "1px solid var(--border)", padding: 12,
               overflowY: "auto", background: "var(--surface-2)" }}>
               {[
-                ["hero", "Home / Hero"], ["bar", "Top bar & video"],
-                ["copy", "Section text"], ["mailing", "Mailing list"],
-                ["announce", "Announcements"], ["about", "About"],
-                ["donate", "Donate"], ["house", "Islamic House"],
-                ["gallery", "Photos"], ["sponsors", "Sponsors"], ["board", "Board members"],
-                ["spaces", "Prayer spaces"], ["times", "Prayer times"],
-                ["events", "Events"], ["calendar", "Calendar"],
-                ["programs", "Programs"], ["stats", "Stats"],
-                ["newhere", "New here?"], ["instagram", "Instagram"],
-                ["links", "Links"], ["contact", "Contact"],
-              ].map(([k, lbl]) => (
-                <button key={k} onClick={() => setTab(k)} style={{ display: "block", width: "100%",
-                  textAlign: "left", padding: "10px 12px", borderRadius: 9, border: "none",
-                  background: tab === k ? PURPLE : "transparent",
-                  color: tab === k ? "#fff" : "var(--text-soft)",
-                  fontWeight: 600, fontSize: 13.5, cursor: "pointer", marginBottom: 3,
-                  fontFamily: "inherit" }}>{lbl}</button>
+                { group: "Global", items: [["bar", "Announcement bar"], ["copy", "Section text"], ["contact", "Contact & links"], ["links", "Quick links"]] },
+                { group: "Home", items: [["hero", "Hero copy"], ["newhere", "New here?"], ["gallery", "Moments (photos)"], ["announce", "Announcements"]] },
+                { group: "About", items: [["about", "About us"], ["donate", "Donate"], ["sponsors", "Sponsors"]] },
+                { group: "Prayer", items: [["times", "Prayer times"], ["spaces", "Prayer spaces"], ["house", "Islamic House"]] },
+                { group: "Events", items: [["events", "Weekly events"], ["calendar", "Calendar"], ["stats", "Stats / metrics"], ["programs", "Programs"]] },
+                { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["mailing", "Mailing list"]] },
+              ].map(({ group, items }) => (
+                <div key={group} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1px",
+                    textTransform: "uppercase", color: "var(--text-faint)", padding: "8px 12px 4px" }}>
+                    {group}
+                  </div>
+                  {items.map(([k, lbl]) => (
+                    <button key={k} onClick={() => setTab(k)} style={{ display: "block", width: "100%",
+                      textAlign: "left", padding: "9px 12px", borderRadius: 9, border: "none",
+                      background: tab === k ? PURPLE : "transparent",
+                      color: tab === k ? "#fff" : "var(--text-soft)",
+                      fontWeight: 600, fontSize: 13.5, cursor: "pointer", marginBottom: 2,
+                      fontFamily: "inherit" }}>{lbl}</button>
+                  ))}
+                </div>
               ))}
               <button onClick={logout} style={{ display: "flex",
                 alignItems: "center", gap: 7, width: "100%", padding: "10px 12px", borderRadius: 9,
@@ -6060,7 +6218,7 @@ function Editor({ tab, data, setData }) {
         </p>
         <button className="btn" onClick={() => set([...items, { id: Date.now(),
           date: new Date().toISOString().slice(0, 10), name: "New event",
-          time: "", loc: "", desc: "" }])}
+          time: "", loc: "", desc: "", category: "" }])}
           style={{ ...btnPurple, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <Plus size={16} /> Add dated event</button>
         <div style={{ display: "grid", gap: 14 }}>
@@ -6082,9 +6240,14 @@ function Editor({ tab, data, setData }) {
               <div><label style={lbl}>Name</label>
                 <input style={inpSm} value={e.name || ""}
                   onChange={(ev) => edit(i, { name: ev.target.value })} /></div>
-              <div><label style={lbl}>Location</label>
-                <input style={inpSm} value={e.loc || ""}
-                  onChange={(ev) => edit(i, { loc: ev.target.value })} /></div>
+              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+                <div><label style={lbl}>Location</label>
+                  <input style={inpSm} value={e.loc || ""}
+                    onChange={(ev) => edit(i, { loc: ev.target.value })} /></div>
+                <div><label style={lbl}>Category (for filtering)</label>
+                  <input style={inpSm} placeholder="e.g. Social, Halaqa, Sports" value={e.category || ""}
+                    onChange={(ev) => edit(i, { category: ev.target.value })} /></div>
+              </div>
               <div><label style={lbl}>Description (optional)</label>
                 <input style={inpSm} value={e.desc || ""}
                   onChange={(ev) => edit(i, { desc: ev.target.value })} /></div>
@@ -6132,10 +6295,8 @@ function Editor({ tab, data, setData }) {
   if (tab === "bar") {
     const bar = data.bar || seed.bar;
     const setBar = (patch) => up({ bar: { ...bar, ...patch } });
-    const hv = data.heroVideo || seed.heroVideo;
-    const setHV = (patch) => up({ heroVideo: { ...hv, ...patch } });
     return (
-      <Section title="Top bar & hero video">
+      <Section title="Announcement bar">
         <label style={{ display: "inline-flex", alignItems: "center", gap: 9,
           fontSize: 14, color: "var(--text-soft)", cursor: "pointer", marginBottom: 14 }}>
           <input type="checkbox" checked={!!bar.on}
@@ -6157,35 +6318,16 @@ function Editor({ tab, data, setData }) {
               onChange={(e) => setBar({ href: e.target.value })} />
           </Field>
         </div>
-        <p style={{ margin: "-4px 0 22px", fontSize: 12.5, color: "var(--text-faint)",
+        <p style={{ margin: "-4px 0 10px", fontSize: 12.5, color: "var(--text-faint)",
           lineHeight: 1.6 }}>
           Editing the message shows the bar again to everyone who dismissed the previous one.
-          Use <b>#events</b>, <b>#donate</b> etc. to scroll to a section instead of leaving the site.
+          Link to a page (<b>/events</b>, <b>/about#donate</b>) or an external URL.
         </p>
-
-        <div style={{ height: 1, background: "var(--border)", margin: "6px 0 20px" }} />
-
-        <h4 style={{ margin: "0 0 6px", fontSize: 14.5, fontWeight: 700,
-          color: "var(--accent)" }}>Hero background video</h4>
-        <p style={{ margin: "0 0 14px", fontSize: 12.5, color: "var(--text-faint)",
-          lineHeight: 1.65 }}>
-          Upload the file to the site's <b>public/</b> folder on GitHub, then put its
-          filename here (e.g. <b>hero.mp4</b>). Leave blank and the hero keeps its gradient.
-          Keep it under about 6&nbsp;MB, muted, and 8–15 seconds so it loops cleanly.
-        </p>
-        <Field label="Video filename or URL">
-          <input style={inp} value={hv.src || ""} placeholder="hero.mp4"
-            onChange={(e) => setHV({ src: e.target.value })} />
-        </Field>
-        <Field label="Poster image (shown while the video loads)">
-          <input style={inp} value={hv.poster || ""} placeholder="hero-poster.jpg"
-            onChange={(e) => setHV({ poster: e.target.value })} />
-        </Field>
-        <Field label={`Darkening: ${Math.round((hv.dim ?? 0.55) * 100)}% — raise it if the headline is hard to read`}>
-          <input type="range" min="0" max="0.9" step="0.05" style={{ width: "100%" }}
-            value={hv.dim ?? 0.55}
-            onChange={(e) => setHV({ dim: parseFloat(e.target.value) })} />
-        </Field>
+        <div style={{ margin: "4px 0 4px", padding: "10px 12px", borderRadius: 10,
+          background: "var(--tint)", fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          The hero is now a scroll-driven cherry-blossom image sequence — there's no video to
+          configure. Frames live in <b>public/hero/</b>.
+        </div>
       </Section>
     );
   }
