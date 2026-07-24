@@ -3032,139 +3032,187 @@ function PatternField() {
 }
 
 /* ── Gallery / "Moments from the year" ────────────────────────────────────
-   Ported from the reference (https://codepen.io/KevinGutowski/pen/QwNZYzL):
-   a real CSS Grid + subgrid layout — one "scaler" photo dead center that
-   starts full-bleed and shrinks to its natural grid-cell size as you
-   scroll, while three "layers" of photos (outer edges, inner columns,
-   center top/bottom) scale + fade in from the middle outward. Using an
-   actual grid (rather than one big auto-fit grid with hand-computed
-   fly-out offsets) is what makes the outward spread read correctly at
-   every viewport size — each photo already lives in its final position,
-   it just animates in from 0.
-   Tuned so the whole reveal is DONE by ~48% of the scroll runway — i.e.
-   photos spread out while the section is still comfortably on screen,
-   not only once you've nearly scrolled past it. */
+   A round, scroll-driven 3D photo carousel — each photo its own circular
+   "subsection" arranged evenly around a ring, in the spirit of the circular
+   carousels at inkwell.tech / the Codrops "Scroll-Driven Circular 3D
+   Carousel" piece. Scrolling through the pinned section spins the ring
+   (smoothed with a lerp toward the scroll-driven target angle, giving it
+   weight/momentum instead of snapping 1:1 to scroll), the cursor tilts the
+   whole assembly slightly toward it, cards dim/brighten by how far around
+   the ring they currently sit (front = brightest), and the caption of
+   whichever photo is currently front-and-center is called out below.
+
+   Built with plain CSS 3D (perspective + rotateY/translateZ), not
+   WebGL/Three.js like the reference — this site has zero 3D-engine
+   dependency today and mobile performance was a real pain point earlier in
+   this project, so the carousel *language* (ring of circular photos, real
+   depth, momentum-driven spin, cursor reactivity) is reproduced without
+   pulling in a renderer. The one thing intentionally left out is the
+   reference's WebGL-only post-processing (chromatic aberration / shader
+   distortion) and raycasted hover — everything else about "a round
+   carousel that spins as you scroll" is here. */
 function Gallery({ items }) {
   const reduced = useReducedMotion();
   const wrapRef = useRef(null);
-  const scalerImgRef = useRef(null);
+  const stickyRef = useRef(null);
+  const sceneRef = useRef(null);
+  const ringRef = useRef(null);
+  const cardRefs = useRef([]);
+  const [activeIdx, setActiveIdx] = useState(0);
 
-  const list = items?.length ? items : [];
-  const scalerItem = list[0];
-  // Everything after the scaler photo feeds the 14 layer slots (6 + 6 + 2),
-  // cycling around if there aren't 14 distinct photos yet — so the effect
-  // looks fully populated whether the gallery has 2 photos or 20.
-  const pool = list.length > 1 ? list.slice(1) : list;
-  const pick = (n) => (pool.length ? pool[n % pool.length] : null);
-  const layer1 = Array.from({ length: 6 }, (_, i) => pick(i));
-  const layer2 = Array.from({ length: 6 }, (_, i) => pick(i + 6));
-  const layer3 = Array.from({ length: 2 }, (_, i) => pick(i + 12));
+  const list = (items?.length ? items : []).filter(Boolean);
+  const n = list.length;
 
-  const grad = (n) => {
+  const grad = (i) => {
     const g = [
       `linear-gradient(135deg,${PURPLE},${VIOLET})`, `linear-gradient(135deg,${MAUVE},${PINK})`,
       `linear-gradient(135deg,${PURPLE_D},${PURPLE})`, `linear-gradient(135deg,${VIOLET},${MAUVE})`,
       `linear-gradient(135deg,${INK},${PURPLE})`, `linear-gradient(135deg,${PINK},${PURPLE})`,
     ];
-    return g[n % g.length];
+    return g[i % g.length];
   };
 
-  const cell = (it, n, key) => (
-    <div key={key}>
-      {it?.img ? (
-        <img src={it.img} alt={it.caption || ""} loading="lazy" />
-      ) : (
-        <div style={{ width: "100%", aspectRatio: "4 / 5", borderRadius: 14, background: grad(n) }} />
-      )}
-    </div>
-  );
-
   useEffect(() => {
-    if (reduced || !scalerItem) return;
-    const wrap = wrapRef.current;
-    const image = scalerImgRef.current;
-    const sticky = wrap?.querySelector(".moments-sticky");
-    if (!wrap || !image || !sticky) return;
-    let cancelled = false;
-    const cleanups = [];
+    if (reduced || n === 0) return;
+    const wrap = wrapRef.current, sticky = stickyRef.current,
+      scene = sceneRef.current, ring = ringRef.current;
+    if (!wrap || !sticky || !scene || !ring) return;
 
-    (async () => {
-      const { animate: manimate, scroll: mscroll, cubicBezier } =
-        await import("https://cdn.jsdelivr.net/npm/motion@11.11.16/+esm");
-      if (cancelled) return;
+    const canHover = window.matchMedia?.("(hover: hover)").matches;
+    let raf = 0, inView = false;
+    let angle = 0, angleTarget = 0;     // ring's own scroll-driven spin (deg)
+    let tiltX = 0, tiltXTarget = 0;     // cursor-driven tilt (deg)
+    let tiltY = 0, tiltYTarget = 0;
+    let radius = 0;
+    let lastActive = -1;
 
-      const layers = wrap.querySelectorAll(".moments-layer");
-      const naturalWidth = image.offsetWidth;
-      const naturalHeight = image.offsetHeight;
-      // IMPORTANT: unlike the reference (a full-bleed page with no
-      // surrounding container), our gallery sits inside a padded,
-      // max-width content column. Using window.innerWidth/innerHeight
-      // here — like the reference does — made the "starts full-bleed"
-      // phase wider than its own sticky container, which then got clipped
-      // and looked broken. Sizing the start state to the sticky
-      // container's own box keeps it exactly filling the visible area,
-      // with nothing clipped.
-      const startWidth = sticky.clientWidth;
-      const startHeight = sticky.clientHeight;
-
-      // Scaler: shrinks from filling the section down to its natural grid
-      // size. Offsets/easings match the reference implementation exactly
-      // (https://codepen.io/KevinGutowski/pen/QwNZYzL).
-      cleanups.push(mscroll(
-        manimate(image, {
-          width: [startWidth, naturalWidth],
-          height: [startHeight, naturalHeight],
-        }, {
-          width: { easing: cubicBezier(0.65, 0, 0.35, 1) },   // power2.inOut
-          height: { easing: cubicBezier(0.42, 0, 0.58, 1) },  // power1.inOut
-        }),
-        { target: wrap, offset: ["start start", "80% end"] }
-      ));
-
-      const scaleEasings = [
-        cubicBezier(0.42, 0, 0.58, 1),  // power1.inOut
-        cubicBezier(0.76, 0, 0.24, 1),  // power3.inOut
-        cubicBezier(0.87, 0, 0.13, 1),  // power4.inOut
-      ];
-
-      layers.forEach((layer, index) => {
-        const endOffset = `${1 - index * 0.05} end`;
-        // fade: holds at 0 until 55% of this layer's own progress, then to 1
-        cleanups.push(mscroll(
-          manimate(layer, { opacity: [0, 0, 1] }, {
-            offset: [0, 0.55, 1],
-            easing: cubicBezier(0.61, 1, 0.88, 1),  // sine.out
-          }),
-          { target: wrap, offset: ["start start", endOffset] }
-        ));
-        // reveal: holds at scale 0 until 30% of this layer's own progress
-        cleanups.push(mscroll(
-          manimate(layer, { scale: [0, 0, 1] }, {
-            offset: [0, 0.3, 1],
-            easing: scaleEasings[index % scaleEasings.length],
-          }),
-          { target: wrap, offset: ["start start", endOffset] }
-        ));
+    // Sizes each card and the ring radius off the scene's own measured
+    // width — fewer photos get bigger cards, more photos shrink to keep
+    // the ring from overflowing, and the radius is the minimum needed for
+    // evenly-spaced cards around a circle not to overlap (plus headroom).
+    const layout = () => {
+      const w = scene.clientWidth || 1;
+      const base = n <= 5 ? 0.30 : n <= 8 ? 0.24 : n <= 12 ? 0.19 : 0.15;
+      const cardSize = Math.max(72, Math.min(230, w * base));
+      const minRadius = n > 1 ? (cardSize / 2) / Math.sin(Math.PI / n) : 0;
+      radius = Math.max(minRadius * 1.22, cardSize * 0.7);
+      sticky.style.perspective = `${Math.max(900, w * 1.15)}px`;
+      cardRefs.current.forEach((card, i) => {
+        if (!card) return;
+        const a = (360 / n) * i;
+        card.style.width = `${cardSize}px`;
+        card.style.height = `${cardSize}px`;
+        card.style.marginLeft = `${-cardSize / 2}px`;
+        card.style.marginTop = `${-cardSize / 2}px`;
+        card.dataset.angle = a;
+        card.style.transform = `rotateY(${a}deg) translateZ(${radius}px)`;
       });
-    })();
+    };
+
+    // 0 at the top of the pinned runway, 1 once scrolled all the way
+    // through it — same "tall spacer + sticky viewport" trick used
+    // elsewhere on the site, just read manually here instead of via a
+    // scroll-linking library.
+    const computeProgress = () => {
+      const rect = wrap.getBoundingClientRect();
+      const total = rect.height - window.innerHeight;
+      if (total <= 0) return rect.top <= 0 ? 1 : 0;
+      return Math.max(0, Math.min(1, -rect.top / total));
+    };
+
+    const measure = () => { angleTarget = computeProgress() * 360; startLoop(); };
+
+    const onPointerMove = (e) => {
+      const rect = scene.getBoundingClientRect();
+      const px = (e.clientX - rect.left) / rect.width - 0.5;
+      const py = (e.clientY - rect.top) / rect.height - 0.5;
+      tiltYTarget = px * 14;
+      tiltXTarget = -py * 10;
+      startLoop();
+    };
+    const onPointerLeave = () => { tiltXTarget = 0; tiltYTarget = 0; startLoop(); };
+
+    const startLoop = () => {
+      if (raf || !inView || document.hidden) return;
+      raf = requestAnimationFrame(tick);
+    };
+
+    const tick = () => {
+      angle += (angleTarget - angle) * 0.07;
+      tiltX += (tiltXTarget - tiltX) * 0.08;
+      tiltY += (tiltYTarget - tiltY) * 0.08;
+      ring.style.transform = `rotateY(${(-angle).toFixed(2)}deg)`;
+      scene.style.transform = `rotateX(${tiltX.toFixed(2)}deg) rotateY(${tiltY.toFixed(2)}deg)`;
+
+      let bestI = 0, bestCos = -Infinity;
+      cardRefs.current.forEach((card, i) => {
+        if (!card) return;
+        const a = parseFloat(card.dataset.angle || "0");
+        const eff = ((a - angle) * Math.PI) / 180;
+        const c = Math.cos(eff);
+        const depth = (c + 1) / 2; // 0 = far side, 1 = front-and-center
+        card.style.opacity = (0.32 + depth * 0.68).toFixed(2);
+        card.style.filter = `brightness(${(0.7 + depth * 0.4).toFixed(2)})`;
+        card.style.zIndex = String(Math.round(depth * 100));
+        if (c > bestCos) { bestCos = c; bestI = i; }
+      });
+      if (bestI !== lastActive) { lastActive = bestI; setActiveIdx(bestI); }
+
+      const settled = Math.abs(angleTarget - angle) < 0.02
+        && Math.abs(tiltXTarget - tiltX) < 0.02 && Math.abs(tiltYTarget - tiltY) < 0.02;
+      if (settled || !inView || document.hidden) { raf = 0; return; }
+      raf = requestAnimationFrame(tick);
+    };
+
+    const io = new IntersectionObserver(([entry]) => {
+      inView = entry.isIntersecting;
+      if (inView) { measure(); startLoop(); }
+      else { cancelAnimationFrame(raf); raf = 0; }
+    }, { rootMargin: "200px 0px" });
+    io.observe(wrap);
+
+    layout();
+    measure();
+    angle = angleTarget; // no lerp lag on first paint
+    tick();
+
+    const ro = new ResizeObserver(layout);
+    ro.observe(scene);
+
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure, { passive: true });
+    if (canHover) {
+      scene.addEventListener("pointermove", onPointerMove);
+      scene.addEventListener("pointerleave", onPointerLeave);
+    }
+    const onVisibility = () => { if (!document.hidden) startLoop(); };
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      cancelled = true;
-      cleanups.forEach((stop) => { try { stop?.(); } catch {} });
+      cancelAnimationFrame(raf);
+      io.disconnect();
+      ro.disconnect();
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+      if (canHover) {
+        scene.removeEventListener("pointermove", onPointerMove);
+        scene.removeEventListener("pointerleave", onPointerLeave);
+      }
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [reduced, scalerItem]);
+  }, [reduced, n]);
 
-  if (!scalerItem) return null;
+  if (n === 0) return null;
 
-  // Reduced-motion / no-JS-animation fallback: a plain static photo grid,
-  // fully visible immediately, no scroll trick at all.
+  // Reduced-motion fallback: a plain static grid of circular photos, fully
+  // visible immediately, no spinning ring at all.
   if (reduced) {
-    const flat = [scalerItem, ...layer1, ...layer2, ...layer3].filter(Boolean);
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))",
-        gap: "clamp(10px,2.4vw,20px)" }}>
-        {flat.map((it, i) => (
-          <div key={it.id ?? i} style={{ borderRadius: 14, overflow: "hidden", aspectRatio: "4 / 5" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))",
+        gap: "clamp(14px,2.6vw,26px)", justifyItems: "center" }}>
+        {list.map((it, i) => (
+          <div key={it.id ?? i} style={{ width: "100%", maxWidth: 160, borderRadius: "50%",
+            overflow: "hidden", aspectRatio: "1 / 1", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
             {it.img
               ? <img src={it.img} alt={it.caption || ""} loading="lazy"
                   style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -3176,99 +3224,75 @@ function Gallery({ items }) {
   }
 
   return (
-    <div ref={wrapRef} className="moments-wrap">
-      <div className="moments-sticky">
-        <div className="moments-grid">
-          <div className="moments-layer">
-            {layer1.map((it, i) => cell(it, i, `l1-${i}`))}
-          </div>
-          <div className="moments-layer">
-            {layer2.map((it, i) => cell(it, i + 6, `l2-${i}`))}
-          </div>
-          <div className="moments-layer">
-            {layer3.map((it, i) => cell(it, i + 12, `l3-${i}`))}
-          </div>
-          <div className="moments-scaler-cell">
-            <div className="moments-scaler">
-              {scalerItem.img ? (
-                <img ref={scalerImgRef} src={scalerItem.img}
-                  alt={scalerItem.caption || "Community moment"} />
-              ) : (
-                <div ref={scalerImgRef} style={{ width: "100%", height: "100%", background: grad(0) }} />
-              )}
-              {scalerItem.caption && (
-                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "26px 16px 14px",
-                  background: "linear-gradient(to top, rgba(20,17,24,.65), transparent)",
-                  color: "#fff", fontSize: 14, fontWeight: 700, borderRadius: "0 0 14px 14px" }}>
-                  {scalerItem.caption}
+    <div ref={wrapRef} className="carousel-wrap">
+      <div className="carousel-sticky" ref={stickyRef}>
+        <div className="carousel-scene" ref={sceneRef}>
+          <div className="carousel-ground" aria-hidden="true" />
+          <div className="carousel-ring" ref={ringRef}>
+            {list.map((it, i) => (
+              <div key={it.id ?? i} className="carousel-card"
+                ref={(el) => { cardRefs.current[i] = el; }}>
+                <div className="carousel-card-inner">
+                  {it.img
+                    ? <img src={it.img} alt={it.caption || ""} loading="lazy" />
+                    : <div className="carousel-card-fallback" style={{ background: grad(i) }} />}
                 </div>
-              )}
-            </div>
+              </div>
+            ))}
           </div>
+        </div>
+        <div className="carousel-caption" aria-live="polite">
+          {list[activeIdx]?.caption || " "}
         </div>
       </div>
       <style>{`
-        /* Runway/sticky-pin mechanics match the reference implementation
-           (https://codepen.io/KevinGutowski/pen/QwNZYzL) as closely as
-           possible: a tall spacer (main section:first-of-type's 240vh)
-           holding a sticky 100vh viewport (.content) while scrolling
-           through it drives the animation.
-           One deliberate difference: .moments-sticky must NOT have
-           overflow:hidden. The reference's .content can safely clip
-           because it's a full-bleed page section — width:100vw with
-           nothing constraining it. Ours lives inside a padded, max-width
-           content column, so the scaler photo's "starts big" phase is
-           sized to *this container's own box* (see the effect above,
-           which reads sticky.clientWidth/Height instead of
-           window.innerWidth/Height) rather than the true viewport — and
-           clipping it here would cut that phase off right as it's
-           supposed to be filling the space. */
-        .moments-wrap { position: relative; min-height: 240vh; }
-        .moments-sticky {
+        .carousel-wrap { position: relative; min-height: 220vh; }
+        .carousel-sticky {
           position: sticky; top: 0; min-height: 100vh; width: 100%;
-          display: flex; align-items: center; justify-content: center;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          overflow: hidden; gap: clamp(14px, 3vh, 30px);
         }
-        .moments-grid {
-          --offset: 0;
-          --container-width: 1600px;
-          --gap: clamp(10px, 7.35vw, 80px);
-          width: var(--container-width);
-          max-width: calc(100% - 40px);
-          display: grid;
-          grid-template-columns: repeat(5, 1fr);
-          grid-template-rows: repeat(3, auto);
-          gap: var(--gap);
-          margin: 0 auto;
-          align-content: center;
-          position: absolute;
-          top: 50%; left: 50%;
-          translate: -50% -50%;
+        .carousel-scene {
+          position: relative; width: min(94vw, 1100px);
+          height: clamp(260px, 42vw, 440px);
+          transform-style: preserve-3d; will-change: transform;
+        }
+        .carousel-ground {
+          position: absolute; left: 50%; top: 50%; width: 68%; height: 26%;
+          transform: translate(-50%,-42%) rotateX(90deg);
+          background: radial-gradient(closest-side, rgba(0,0,0,.32), transparent 72%);
+          pointer-events: none;
+        }
+        .carousel-ring {
+          position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+          transform-style: preserve-3d; will-change: transform;
+        }
+        .carousel-card {
+          position: absolute; left: 0; top: 0;
+          transform-style: preserve-3d;
+        }
+        .carousel-card-inner {
+          width: 100%; height: 100%; border-radius: 50%; overflow: hidden;
+          box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 0 0 3px rgba(255,255,255,.08) inset;
+          transition: transform .25s ease;
+        }
+        .carousel-card:hover .carousel-card-inner { transform: scale(1.08); }
+        .carousel-card img, .carousel-card-fallback {
+          width: 100%; height: 100%; object-fit: cover; display: block;
+        }
+        .carousel-caption {
+          min-height: 1.4em; font-size: clamp(13px, 1.6vw, 16px); font-weight: 700;
+          letter-spacing: .3px; color: var(--accent, ${GOLD}); text-align: center;
+          opacity: .92; padding: 0 16px;
         }
         @media (max-width: 640px) {
-          .moments-grid { grid-template-columns: repeat(3, 1fr); --offset: -1; }
-          .moments-grid > .moments-layer:nth-of-type(1) { display: none; }
-        }
-        .moments-grid > .moments-layer {
-          display: grid; grid-column: 1 / -1; grid-row: 1 / -1;
-          grid-template-columns: subgrid; grid-template-rows: subgrid;
-        }
-        .moments-grid > .moments-layer:nth-of-type(1) div:nth-of-type(odd) { grid-column: 1; }
-        .moments-grid > .moments-layer:nth-of-type(1) div:nth-of-type(even) { grid-column: -2; }
-        .moments-grid > .moments-layer:nth-of-type(2) div:nth-of-type(odd) { grid-column: calc(2 + var(--offset)); }
-        .moments-grid > .moments-layer:nth-of-type(2) div:nth-of-type(even) { grid-column: calc(-3 - var(--offset)); }
-        .moments-grid > .moments-layer:nth-of-type(3) div:first-of-type { grid-column: calc(3 + var(--offset)); grid-row: 1; }
-        .moments-grid > .moments-layer:nth-of-type(3) div:last-of-type { grid-column: calc(3 + var(--offset)); grid-row: -1; }
-        .moments-grid img { width: 100%; aspect-ratio: 4 / 5; object-fit: cover; border-radius: 14px; display: block; }
-        .moments-grid .moments-scaler-cell { position: relative; grid-area: 2 / calc(3 + var(--offset)); }
-        .moments-scaler { z-index: 2; width: 100%; height: 100%; position: relative; }
-        .moments-scaler img, .moments-scaler > div {
-          position: absolute; top: 50%; left: 50%; translate: -50% -50%;
-          object-fit: cover; border-radius: 14px; width: 100%; height: 100%;
+          .carousel-scene { height: clamp(220px, 58vw, 320px); }
         }
       `}</style>
     </div>
   );
 }
+
 
 
 /* ---------- PRAYER ---------- */
