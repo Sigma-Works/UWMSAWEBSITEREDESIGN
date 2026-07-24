@@ -1,6 +1,17 @@
 # MSA UW Website
 
-Single-page site for the University of Washington Muslim Student Association, built with React + Vite. Hosts free on GitHub Pages.
+Multi-page site for the University of Washington Muslim Student Association, built with React + Vite. Hosts free on GitHub Pages.
+
+## What's new (redesign)
+
+- **Scroll-driven cherry-blossom hero.** An Apple-style pinned HTML5-canvas sequence (270 WebP frames in `public/hero/`) that scrubs 1:1 with the scrollbar. Uses `requestAnimationFrame` throttling, progressive preloading, retina-aware backing store, responsive `lg`/`sm` source sets, and a static poster fallback under `prefers-reduced-motion`. See `src/components/CanvasHeroSequence.jsx`.
+- **Five pages** via a zero-config hash router (safe on GitHub Pages): Home `/`, About `/about`, Prayer `/prayer`, Events `/events`, Community `/community`.
+- **Consolidated Settings menu.** Dark/light mode and the falling-petals toggle now live inside the ⚙ Settings dropdown (and a matching section in the mobile menu), alongside reduce-motion/glow/ripple.
+- **Admin panel** regrouped to match the five pages; the obsolete hero-video config was removed.
+- **Live Instagram** feed for **@msauw** (embeds individual permalinks if set, else the live profile).
+
+### Managing the hero frames
+Frames live in `public/hero/lg/` (1152px) and `public/hero/sm/` (640px), named `frame-000.webp … frame-269.webp`, with `public/hero/poster.webp` as the reduced-motion still. To change the sequence, replace those files (keep the same count and naming) or adjust `FRAME_COUNT` in `CanvasHeroSequence.jsx`.
 
 ## Quick start (local)
 
