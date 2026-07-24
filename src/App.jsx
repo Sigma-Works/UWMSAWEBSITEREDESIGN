@@ -2529,7 +2529,10 @@ function HomeSection({ data, onNav, curtainDone }) {
   // Sizes the arch so it actually encloses the rosette wheel down through
   // the CTA buttons, measured from the real rendered layout rather than
   // guessed percentages.
-  const archBox = useEnclosingBox(sectionRef, rosetteWrapRef, ctaRef, archWidthRefs, 38);
+  // Padding bumped up a bit (38 → 56) to give the arch some extra
+  // breathing room around the rosette/CTA it encloses, now that the logo
+  // sits higher up inside it.
+  const archBox = useEnclosingBox(sectionRef, rosetteWrapRef, ctaRef, archWidthRefs, 56);
 
   // Fluid-reveal entrance — logo mark scales/fades in, then
   // kicker/headline/subtitle/CTA. Fires once the curtain hands off (or
@@ -2621,7 +2624,7 @@ function HomeSection({ data, onNav, curtainDone }) {
         {/* ── Logo mark — pulled out of normal flow and pinned above the
             rosary wheel's own center (rosette center is top:5% + half its
             560px size = 5%+280px; the logo sits higher than that, at
-            5%+104px, so it reads as tucked up near the top of the arch's
+            5%+152px, so it reads as tucked up near the top of the arch's
             opening rather than dead-center on the wheel — while still
             leaving a comfortable gap from the arch's peak itself).
             A radiating neon purple/gold glow sits behind it, its angle
@@ -2633,7 +2636,7 @@ function HomeSection({ data, onNav, curtainDone }) {
             on separate elements — same reason as TiltWrap — otherwise the
             animation's own `transform` write would knock the mark off its
             centered position. ── */}
-        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 104px)",
+        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 152px)",
           transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
           <div className="hero-logo-mark" style={{
             position: "relative", opacity: 0,
