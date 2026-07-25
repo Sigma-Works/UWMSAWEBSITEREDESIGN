@@ -58,7 +58,9 @@ const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-
 // a label for the nav, and the ordered list of section ids it renders.
 // Section components stay exactly as they were; only where they live moved.
 const PAGES = [
-  { route: "/",          label: "Home",      sections: ["home", "new-here", "moments", "announcements"] },
+  // "announcements" is no longer its own section here — it's rendered
+  // inside "home" now (the arch/rosary backdrop shows announcement cards).
+  { route: "/",          label: "Home",      sections: ["home", "new-here", "moments"] },
   { route: "/about",     label: "About",     sections: ["about", "donate", "connect", "sponsors"] },
   { route: "/prayer",    label: "Prayer",    sections: ["prayer", "islamic-house"] },
   { route: "/events",    label: "Events",    sections: ["events", "stats", "programs"] },
@@ -1120,7 +1122,11 @@ const seed = {
   // itself lives here since it's a single URL, not a copy field.
   newHere: {
     linkLabel: "Read the Muslim Student Guide",
-    href: "",
+    // Was previously duplicated as its own card in the Connect/"Find your
+    // people" links list ("Guide to being a Muslim at UW") — moved here so
+    // there's one canonical place for it, editable from the "New here?"
+    // admin tab.
+    href: "https://docs.google.com/document/d/16K_gyLqsaIWM-s6BXqNTarokx8q9srlzK3433G9VFZ0/edit?usp=sharing",
   },
   // ── Instagram — admin pastes individual post URLs (same pattern as the
   // photo gallery); each renders via Instagram's own oEmbed widget, no API
@@ -1242,7 +1248,8 @@ const seed = {
     { id: 3, name: "Instagram", href: "https://instagram.com/msauw", kind: "instagram" },
     { id: 4, name: "MSA UW Facebook", href: "https://www.facebook.com/groups/650155172271569/", kind: "facebook" },
     { id: 5, name: "Sisters' Facebook Group", href: "https://www.facebook.com/groups/355223922312624/", kind: "facebook" },
-    { id: 6, name: "Guide to being a Muslim at UW", href: "https://docs.google.com/document/d/16K_gyLqsaIWM-s6BXqNTarokx8q9srlzK3433G9VFZ0/edit?usp=sharing", kind: "link" },
+    // id 6 (the Muslim Student Guide) used to live here too — now lives only
+    // as the button in the "New here?" section, so it's not duplicated.
     { id: 7, name: "Donate to MSA UW 💜", href: "https://www.zeffy.com/en-US/donation-form/44131d7a-557e-4fdc-9a70-14e9f67206ef", kind: "donate" },
     { id: 8, name: "Donate to the Islamic House", href: "https://www.zeffy.com/en-US/donation-form/0b12beb3-2da5-4c6b-87b9-cfc84cf47e6a", kind: "donate" },
   ],
@@ -1548,9 +1555,14 @@ function PageRouter({ route, data, onNav, curtainDone, reduced }) {
   const render = (id) => {
     switch (id) {
       case "home":          return <HomeSection key="home" data={data} onNav={onNav} curtainDone={curtainDone} reduced={reduced} />;
-      case "new-here":      return <NewHereSection key="new-here" data={data} />;
+      case "new-here":      return <NewHereSection key="new-here" data={data} onNav={onNav} />;
       case "moments":       return <MomentsSection key="moments" data={data} />;
-      case "announcements": return <AnnouncementsSection key="announcements" data={data} />;
+      // "announcements" used to be its own standalone section here — it's
+      // now folded into the home hero (the arch/rosary backdrop shows the
+      // announcement cards directly), so there's no separate case for it
+      // anymore. The id lives on in data.sections.announcements (still
+      // editable from the admin "Section text" tab) and in the footer/
+      // search links below, both retargeted to "home".
       case "about":         return <AboutSection key="about" data={data} />;
       case "donate":        return <DonateSection key="donate" data={data} />;
       case "connect":       return <ConnectSection key="connect" data={data} />;
@@ -2554,20 +2566,31 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
   const glowARef = useRef(null);
   const glowBRef = useRef(null);
   const rosetteWrapRef = useRef(null);
-  const ctaRef = useRef(null);
-  const archWidthRefs = useRef([rosetteWrapRef, ctaRef]).current;
-  const titleWords = String(data.hero.title ?? seed.hero.title).split(" ");
+  // Used to be the CTA buttons (Get Involved / Learn More) — those moved to
+  // the New Here section, so the arch's lower boundary is now the
+  // announcement cards instead.
+  const announceRef = useRef(null);
+  const archWidthRefs = useRef([rosetteWrapRef, announceRef]).current;
+  // Sorted announcements — pinned first — rendered where the old
+  // headline/subtitle/CTA used to sit. Same data + sort the standalone
+  // Announcements section used to use, before that section was folded into
+  // this hero backdrop (the arch + spinning rosary now *is* the
+  // announcement section, rather than a separate block further down).
+  const sortedAnnouncements = React.useMemo(() => {
+    const items = data.announcements || [];
+    return [...items].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+  }, [data.announcements]);
 
   // Drives --fx-angle/--fx-mix on the section for the logo glow + arch glow.
   useHeroScrollFX(sectionRef, reduced);
 
   // Sizes the arch so it actually encloses the rosette wheel down through
-  // the CTA buttons, measured from the real rendered layout rather than
-  // guessed percentages.
+  // the announcement cards, measured from the real rendered layout rather
+  // than guessed percentages.
   // Padding bumped up a bit (38 → 56) to give the arch some extra
-  // breathing room around the rosette/CTA it encloses, now that the logo
-  // sits higher up inside it.
-  const archBox = useEnclosingBox(sectionRef, rosetteWrapRef, ctaRef, archWidthRefs, 56);
+  // breathing room around what it encloses, now that the logo sits higher
+  // up inside it.
+  const archBox = useEnclosingBox(sectionRef, rosetteWrapRef, announceRef, archWidthRefs, 56);
 
   // Fluid-reveal entrance — logo mark scales/fades in, then
   // kicker/headline/subtitle/CTA. Fires once the curtain hands off (or
@@ -2582,7 +2605,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
     if (!stage || !section) return;
     if (reduced) {
       utils.set(section.querySelectorAll(
-        ".hero-kicker,.hero-word,.hero-subtitle,.hero-cta,.hero-logo-mark"
+        ".hero-kicker,.hero-ann-head,.hero-ann-cards,.hero-logo-mark"
       ), { opacity: 1, translateY: 0, scale: 1, filter: "blur(0px)" });
       return;
     }
@@ -2592,15 +2615,11 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
     tl.add(section.querySelector(".hero-logo-mark"), {
         opacity: [0, 1], scale: [0.85, 1], duration: 950, ease: "outExpo",
       }, 0)
-      .add(stage.querySelectorAll(".hero-word"), {
-        opacity: [0, 1], translateY: [40, 0], filter: ["blur(8px)", "blur(0px)"],
-        duration: 700, delay: stagger(75),
+      .add(stage.querySelector(".hero-ann-head"), {
+        opacity: [0, 1], translateY: [24, 0], filter: ["blur(6px)", "blur(0px)"], duration: 650,
       }, "-=250")
-      .add(stage.querySelector(".hero-subtitle"), {
-        opacity: [0, 1], translateY: [20, 0], duration: 600,
-      }, "-=150")
-      .add(stage.querySelector(".hero-cta"), {
-        opacity: [0, 1], translateY: [24, 0], duration: 600, delay: stagger(90),
+      .add(stage.querySelector(".hero-ann-cards"), {
+        opacity: [0, 1], translateY: [22, 0], duration: 600,
       }, "-=200")
       .add(stage.querySelector(".hero-kicker"), {
         opacity: [0, 1], translateY: [16, 0], duration: 500,
@@ -2681,13 +2700,25 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
         {/* large rosary-wheel medallion — spins as the page scrolls, tilts
             slightly in 3D toward the cursor, centered directly behind the
             logo/arch. Wrapped in a plain measured div (rosetteWrapRef) so
-            HeroArch below can size itself to actually enclose it. */}
+            HeroArch below can size itself to actually enclose it.
+            The wheel used to be a flat 560px regardless of viewport — on
+            phones (much narrower than 560px) the section's overflow:hidden
+            clipped its left/right edges into two straight vertical lines,
+            so what should read as a circle came across as a squared-off
+            shape. Sizing it with clamp() instead keeps it a true circle at
+            every width, just a smaller one on small screens — and as a
+            bonus, the arch below (which measures this wrapper's real
+            width) now hugs it correctly on mobile too instead of sizing
+            itself for the old fixed 560px. */}
         <div ref={rosetteWrapRef} style={{ position: "absolute", top: "5%", left: "50%",
-          marginLeft: -280, pointerEvents: "none", zIndex: 0 }}>
+          width: "clamp(230px, 52vw, 560px)", height: "clamp(230px, 52vw, 560px)",
+          marginLeft: "calc(clamp(230px, 52vw, 560px) / -2)",
+          pointerEvents: "none", zIndex: 0 }}>
           <TiltWrap max={9}>
             <ScrollSpin speed={14}>
-              <Rosette points={16} skip={7} size={560} color={GOLD}
-                opacity={0.15} strokeWidth={1} />
+              <Rosette points={16} skip={7} color={GOLD}
+                opacity={0.15} strokeWidth={1}
+                style={{ width: "clamp(230px, 52vw, 560px)", height: "clamp(230px, 52vw, 560px)" }} />
             </ScrollSpin>
           </TiltWrap>
         </div>
@@ -2746,45 +2777,96 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
               kicker/headline below from jumping up. */}
           <div aria-hidden="true" style={{ height: "clamp(300px, 38vw, 400px)" }} />
 
-          <h1 style={{ fontSize: "clamp(40px,7.4vw,86px)", fontWeight: 800, lineHeight: 1.02,
-            letterSpacing: "-2.6px", margin: "0 0 24px" }}>
-            {titleWords.map((w, i) => {
-              const last = i === titleWords.length - 1;
-              return (
-                <span key={i} style={{ display: "inline-block", overflow: "hidden", verticalAlign: "top" }}>
-                  <span className="hero-word" style={{
-                    display: "inline-block", opacity: 0,
-                    ...(last ? {
-                      backgroundImage: GRAD, WebkitBackgroundClip: "text", backgroundClip: "text",
-                      WebkitTextFillColor: "transparent", color: "transparent",
-                    } : {}),
-                  }}>{w}</span>
-                  {!last && <span>&nbsp;</span>}
-                </span>
-              );
-            })}
-          </h1>
-          <p className="hero-subtitle" style={{ opacity: 0, fontSize: "clamp(17px,2.2vw,22px)",
-            color: "rgba(255,255,255,.85)", maxWidth: 660, margin: "0 auto 40px", lineHeight: 1.6 }}>
-            {data.hero.mission}
-          </p>
-          <div ref={ctaRef} className="hero-cta" style={{ opacity: 0, display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
-            <Magnetic><button className="btn" onClick={() => onNav("connect")}
-              style={{ padding: "14px 30px", borderRadius: 12, fontWeight: 700, fontSize: 15.5,
-                border: "none", cursor: "pointer", color: "#fff",
-                background: `linear-gradient(120deg, ${PURPLE}, #E8A9D6)` }}>
-              Get Involved
-            </button></Magnetic>
-            <Magnetic><button className="btn" onClick={() => onNav("moments")}
-              style={{ padding: "14px 30px", borderRadius: 12, fontWeight: 700, fontSize: 15.5,
-                background: "transparent", color: "#fff", cursor: "pointer",
-                border: "1px solid rgba(232,169,214,.5)" }}>
-              Learn More
-            </button></Magnetic>
+          {/* ── This used to be the headline/subtitle/CTA. Per the plan
+              (arch + spinning rosary backdrop becomes the announcements
+              section, standalone Announcements section below removed): the
+              backdrop — glow, rosette wheel, arch, logo — stays exactly as
+              it was; what sits inside it is now the announcement header +
+              cards instead of the old marketing headline. Get Involved /
+              Learn More moved down to the New Here section. ── */}
+          <div className="hero-ann-head" style={{ opacity: 0 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
+              padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.18)",
+              border: "1px solid rgba(201,182,136,.45)", marginBottom: 18 }}>
+              <Star8 size={14} color={GOLD} />
+              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.2px",
+                textTransform: "uppercase", color: "rgba(255,255,255,.85)" }}>
+                {data.sections?.announcements?.eyebrow ?? seed.sections.announcements.eyebrow}
+              </span>
+            </div>
+            <h1 style={{ margin: "0 0 14px", fontSize: "clamp(34px,5.4vw,58px)", fontWeight: 800,
+              lineHeight: 1.05, letterSpacing: "-1.8px" }}>
+              {data.sections?.announcements?.title ?? seed.sections.announcements.title}
+            </h1>
+            {(data.sections?.announcements?.body ?? seed.sections.announcements.body) && (
+              <p style={{ maxWidth: 560, margin: "0 auto", color: "rgba(255,255,255,.8)",
+                fontSize: "clamp(15px,1.8vw,17px)", lineHeight: 1.65 }}>
+                {data.sections?.announcements?.body ?? seed.sections.announcements.body}
+              </p>
+            )}
           </div>
 
-          {/* "Est. 1968" pill — now sits below the CTAs and doubles as a
-              link down to the About section instead of being purely
+          <div ref={announceRef} className="hero-ann-cards" style={{ opacity: 0, marginTop: 32, textAlign: "left" }}>
+            {sortedAnnouncements.length === 0 ? (
+              <div style={{ padding: "22px 20px", borderRadius: 16, textAlign: "center",
+                background: "rgba(255,255,255,.06)", border: "1px solid rgba(201,182,136,.28)",
+                color: "rgba(255,255,255,.6)", fontSize: 14 }}>
+                Nothing new right now — check back soon.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
+                gap: 14 }}>
+                {sortedAnnouncements.map((a) => {
+                  const kind = ANN_KINDS[a.kind] || ANN_KINDS.notice;
+                  const Wrapper = a.href ? "a" : "div";
+                  const wrapProps = a.href
+                    ? { href: a.href, target: "_blank", rel: "noopener noreferrer" } : {};
+                  return (
+                    <Wrapper key={a.id} {...wrapProps} className="lift" style={{
+                      display: "block", padding: 0, overflow: "hidden", height: "100%",
+                      textDecoration: "none", position: "relative", borderRadius: 16,
+                      background: "rgba(255,255,255,.06)", border: "1px solid rgba(201,182,136,.28)" }}>
+                      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0,
+                        bottom: 0, width: 4, background: kind.color }} />
+                      <div style={{ padding: "18px 20px 18px 24px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+                          flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.2px",
+                            textTransform: "uppercase", color: kind.color }}>{kind.label}</span>
+                          {a.pinned && (
+                            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".6px",
+                              textTransform: "uppercase", color: "rgba(255,255,255,.6)",
+                              border: "1px solid rgba(255,255,255,.25)", borderRadius: 99,
+                              padding: "2px 8px" }}>Pinned</span>
+                          )}
+                          {a.date && (
+                            <span style={{ marginLeft: "auto", fontSize: 12.5,
+                              color: "rgba(255,255,255,.55)" }}>{a.date}</span>
+                          )}
+                        </div>
+                        <h3 style={{ margin: "0 0 6px", fontSize: 16.5, fontWeight: 700,
+                          color: "#fff" }}>{a.title}</h3>
+                        {a.body && (
+                          <div style={{ color: "rgba(255,255,255,.75)", fontSize: 14, lineHeight: 1.55 }}>
+                            <Markdown text={a.body} style={{ margin: "0 0 6px" }} />
+                          </div>
+                        )}
+                        {a.href && (
+                          <div style={{ marginTop: 8, color: GOLD, fontSize: 12.5,
+                            fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            Read more <ExternalLink size={12} />
+                          </div>
+                        )}
+                      </div>
+                    </Wrapper>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* "Est. 1968" pill — sits below the announcements and doubles as
+              a link down to the About section instead of being purely
               decorative. */}
           <button className="hero-kicker btn" onClick={() => onNav("about")}
             aria-label="Jump to the About section"
@@ -3096,7 +3178,6 @@ function HeroArch({ box }) {
   // (below) is resized to actually fit the rosette + CTA buttons; the
   // viewBox stays the same so the mihrab silhouette doesn't distort.
   const W = 220, H = 300, SPRING = 168;
-  const innerW = W * 0.82, innerH = H * 0.9, innerSpring = SPRING * 0.84;
   const { ticks, stars } = React.useMemo(() => archOrnamentGeometry(W, H, SPRING, 6, 9), []);
 
   // NOTE: the centering translate and the float animation must live on
@@ -3127,18 +3208,13 @@ function HeroArch({ box }) {
               filter: glowFilter,
             }} />
 
-          {/* inset concentric frame — slowly rotates with scroll position
-              (var(--fx-angle)) for a genuinely scroll-animated geometric
-              piece, not just a colour pulse */}
-          <g style={{
-            transform: `translate(${(W - innerW) / 2}px, ${H - innerH}px) rotate(calc(var(--fx-angle, 0deg) * 0.12))`,
-            transformOrigin: `${W / 2}px ${H - innerH / 2}px`,
-            opacity: drawn ? 0.55 : 0,
-            transition: reduced ? "none" : `opacity 1200ms ${EASE.outSoft} 650ms`,
-          }}>
-            <path d={archPath(innerW, innerH, innerSpring)} fill="none"
-              stroke="rgba(201,182,136,.4)" strokeWidth="1" />
-          </g>
+          {/* The smaller inset concentric frame that used to sit here (a
+              continuously scroll-rotated <g>, independent of the outer
+              arch outline above) was removed — it read as an unnecessary
+              extra moving piece next to the rosette wheel already spinning
+              behind it, and cost a per-frame transform recalculation for
+              not much visual payoff. The outer arch outline, voussoir fan,
+              and star accents below are untouched. */}
 
           {/* voussoir fan — short radiating ticks along the curve, like
               wedge-stone joints on a real mihrab */}
@@ -3472,11 +3548,21 @@ function Gallery({ items }) {
         </div>
       </div>
       <style>{`
-        .carousel-wrap { position: relative; min-height: 220vh; }
+        /* This section used a 220vh spacer + a forced-100vh sticky panel to
+           drive the scroll-linked spin — that combination was the "empty
+           space" under Moments from the Year: ~120vh of pure dead scroll
+           after the pin released, PLUS the sticky panel itself padding the
+           (much shorter) carousel out to a full screen height with blank
+           margins above/below. Trimming both: a shorter runway still gives
+           plenty of scroll distance to drive the spin smoothly, and the
+           sticky panel now sizes to its content (+ breathing room) instead
+           of always claiming 100vh. */
+        .carousel-wrap { position: relative; min-height: 145vh; }
         .carousel-sticky {
-          position: sticky; top: 0; min-height: 100vh; width: 100%;
+          position: sticky; top: 0; width: 100%;
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           overflow: hidden; gap: clamp(14px, 3vh, 30px);
+          padding: clamp(24px, 6vh, 64px) 0;
         }
         .carousel-row {
           width: min(96vw, 1300px); display: flex; align-items: center; justify-content: center;
@@ -4103,26 +4189,17 @@ function SectionLight({ tone = "violet", intensity = 1, placement = "top-left" }
    Sits above the nav. Dismissal is remembered per-message, so editing the
    text in the admin panel re-shows it to everyone who dismissed the old one. */
 function AnnouncementBar({ bar, onNav }) {
-  const [dismissed, setDismissed] = useState(true);
-  // Hash the text so a new message counts as a new bar.
-  const sig = React.useMemo(() => {
-    const t = `${bar?.text || ""}|${bar?.linkLabel || ""}|${bar?.href || ""}`;
-    let h = 0;
-    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0;
-    return String(h);
-  }, [bar]);
-
-  useEffect(() => {
-    try { setDismissed(localStorage.getItem("msa-bar") === sig); }
-    catch { setDismissed(false); }
-  }, [sig]);
+  // No persistence on purpose: dismissing the bar should only hide it for
+  // the current page view, not forever — refreshing (or just visiting
+  // again later) brings it back. Plain component state does exactly that
+  // since it resets on every fresh load; it used to write a dismissal
+  // hash to localStorage, which persists indefinitely and was why closing
+  // it once made it disappear for good.
+  const [dismissed, setDismissed] = useState(false);
 
   if (!bar?.on || !bar?.text || dismissed) return null;
 
-  const close = () => {
-    setDismissed(true);
-    try { localStorage.setItem("msa-bar", sig); } catch {}
-  };
+  const close = () => setDismissed(true);
 
   // Internal links: "#section", "/route", or "/route#section".
   const isInternal = bar.href && (bar.href.startsWith("#") || bar.href.startsWith("/"));
@@ -4335,7 +4412,8 @@ function buildIndex(data) {
     push("Board", m.name, [m.role, m.status === "previous" ? "Previous" : "Current"]
       .filter(Boolean).join(" · "), "board"));
   (data.prayerSpaces || []).forEach((s) => push("Prayer space", s.name, s.loc, "prayer"));
-  (data.announcements || []).forEach((a) => push("Announcement", a.title, a.body, "announcements"));
+  // Announcements now render inside the "home" hero, not their own section.
+  (data.announcements || []).forEach((a) => push("Announcement", a.title, a.body, "home"));
   (data.links || []).forEach((l) => push("Link", l.name, l.href, "connect"));
   (data.sponsors || []).forEach((s) => push("Sponsor", s.name, "", "sponsors"));
   (data.about?.pillars || []).forEach((p) => push("About", p.title, p.text, "about"));
@@ -4452,15 +4530,31 @@ function SearchOverlay({ open, onClose, data, onNav }) {
 
 /* Defers loading the tree (and anime.js with it) until the section is close
    to the viewport, so the initial page load stays light. */
+/* A small grove instead of one lone tree — three trees with different
+   seeds/heights/opacities (so they read as distinct trees, not clones),
+   all lazy-mounted together behind a single shared IntersectionObserver
+   rather than one per tree. The center tree is the tallest/fullest —
+   reads as the "main" one, with two smaller ones flanking it for depth. */
+const GROVE = [
+  { seed: 41, height: 320, depth: 5, opacity: 0.55 },
+  { seed: 11, height: 430, depth: 6, opacity: 1 },
+  { seed: 23, height: 340, depth: 5, opacity: 0.6 },
+];
 function LazyQuadTree({ reduced }) {
   const [ref, near] = useInView({ threshold: 0, rootMargin: "600px 0px" });
   return (
-    <div ref={ref} style={{ minHeight: 430 }}>
+    <div ref={ref} style={{ minHeight: 430, display: "flex", alignItems: "flex-end",
+      justifyContent: "center" }}>
       {near && (
-        <React.Suspense fallback={<div style={{ height: 430 }} />}>
-          <QuadTree reduced={reduced} height={430}
-            accent={PINK} bark="#6b5545" gold={GOLD}
-            petalColors={[PINK, "#e8c4d4", MAUVE]} />
+        <React.Suspense fallback={<div style={{ height: 430, width: "100%" }} />}>
+          {GROVE.map((t, i) => (
+            <div key={t.seed} style={{ flex: "1 1 0", minWidth: 0, maxWidth: 380,
+              opacity: t.opacity, marginLeft: i === 0 ? 0 : -24 }}>
+              <QuadTree reduced={reduced} height={t.height} seed={t.seed} depth={t.depth}
+                accent={PINK} bark="#6b5545" gold={GOLD}
+                petalColors={[PINK, "#e8c4d4", MAUVE]} />
+            </div>
+          ))}
         </React.Suspense>
       )}
     </div>
@@ -4563,81 +4657,18 @@ function AboutSection({ data }) {
   );
 }
 
-/* ---------- ANNOUNCEMENTS ---------- */
+/* ---------- ANNOUNCEMENTS ----------
+   The standalone Announcements section that used to live here is gone —
+   its content now renders directly inside the home hero (see HomeSection's
+   .hero-ann-head / .hero-ann-cards), where the arch + spinning rosary used
+   to frame a marketing headline. ANN_KINDS stays here since HomeSection
+   still uses it for the announcement card styling. */
 const ANN_KINDS = {
   notice:   { label: "Notice",   color: "#8c78b4" },
   deadline: { label: "Deadline", color: "#b4788c" },
   event:    { label: "Event",    color: "#c9b688" },
   ramadan:  { label: "Ramadan",  color: "#7fa08c" },
 };
-
-function AnnouncementsSection({ data }) {
-  const items = data.announcements || [];
-  // Pinned first, otherwise keep admin ordering.
-  const sorted = [...items].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
-  return (
-    <Band id="announcements" alt lattice rosettes="left" light lightTone="gold" lightAt="top-left">
-      <SectionCopy data={data} sectionKey="announcements" />
-      {sorted.length === 0 ? (
-        <Reveal>
-          <div style={{ ...card, padding: "26px 24px", color: "var(--text-faint)",
-            fontSize: 14.5 }}>Nothing new right now — check back soon.</div>
-        </Reveal>
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))",
-          gap: 16 }}>
-          {sorted.map((a, n) => {
-            const kind = ANN_KINDS[a.kind] || ANN_KINDS.notice;
-            const Wrapper = a.href ? "a" : "div";
-            const wrapProps = a.href
-              ? { href: a.href, target: "_blank", rel: "noopener noreferrer" } : {};
-            return (
-              <Reveal key={a.id} delay={n * 75} variant="rise" distance={26}>
-                <Wrapper {...wrapProps} className="lift" style={{ ...card, display: "block",
-                  padding: 0, overflow: "hidden", height: "100%", textDecoration: "none",
-                  position: "relative" }}>
-                  {/* colour spine marks the kind at a glance */}
-                  <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0,
-                    bottom: 0, width: 4, background: kind.color }} />
-                  <div style={{ padding: "20px 22px 20px 26px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10,
-                      flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.2px",
-                        textTransform: "uppercase", color: kind.color }}>{kind.label}</span>
-                      {a.pinned && (
-                        <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".6px",
-                          textTransform: "uppercase", color: "var(--text-faint)",
-                          border: "1px solid var(--border-strong)", borderRadius: 99,
-                          padding: "2px 8px" }}>Pinned</span>
-                      )}
-                      {a.date && (
-                        <span style={{ marginLeft: "auto", fontSize: 12.5,
-                          color: "var(--text-faint)" }}>{a.date}</span>
-                      )}
-                    </div>
-                    <h3 style={{ margin: "0 0 8px", fontSize: 17.5, fontWeight: 700,
-                      color: "var(--text)" }}>{a.title}</h3>
-                    {a.body && (
-                      <div style={{ color: "var(--text-muted)", fontSize: 14.5, lineHeight: 1.6 }}>
-                        <Markdown text={a.body} style={{ margin: "0 0 8px" }} />
-                      </div>
-                    )}
-                    {a.href && (
-                      <div style={{ marginTop: 10, color: "var(--accent)", fontSize: 13,
-                        fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}>
-                        Read more <ExternalLink size={12} />
-                      </div>
-                    )}
-                  </div>
-                </Wrapper>
-              </Reveal>
-            );
-          })}
-        </div>
-      )}
-    </Band>
-  );
-}
 
 /* ---------- DONATE ---------- */
 function DonateSection({ data }) {
@@ -5122,22 +5153,46 @@ function ProgramCard({ program: p }) {
    Heading/body come from the standard section-copy system (admin: Section
    text → "New here?"); the link itself is a single field on its own admin
    tab, since it's a URL rather than editorial copy. */
-function NewHereSection({ data }) {
+function NewHereSection({ data, onNav }) {
   const nh = data.newHere || seed.newHere;
   return (
     <Band id="new-here" lattice rosettes="left" light lightTone="gold" lightAt="top-left">
       <SectionCopy data={data} sectionKey="newHere" />
-      {nh.href && (
-        <Reveal variant="rise" distance={20}>
-          <a href={nh.href} target="_blank" rel="noopener noreferrer" className="btn lift"
-            style={{ display: "inline-flex", alignItems: "center", gap: 9,
-              padding: "13px 24px", borderRadius: 12, textDecoration: "none",
-              fontWeight: 700, fontSize: 15, color: "#2c2418",
-              background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)` }}>
-            <BookOpen size={17} /> {nh.linkLabel || "Read the guide"}
-          </a>
-        </Reveal>
-      )}
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+        {nh.href && (
+          <Reveal variant="rise" distance={20}>
+            <a href={nh.href} target="_blank" rel="noopener noreferrer" className="btn lift"
+              style={{ display: "inline-flex", alignItems: "center", gap: 9,
+                padding: "13px 24px", borderRadius: 12, textDecoration: "none",
+                fontWeight: 700, fontSize: 15, color: "#2c2418",
+                background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)` }}>
+              <BookOpen size={17} /> {nh.linkLabel || "Read the guide"}
+            </a>
+          </Reveal>
+        )}
+        {/* Get Involved / Learn More — moved down from the home hero, which
+            now shows announcements instead of a marketing CTA. This is a
+            more natural home for them anyway: newcomers land here right
+            after the hero, looking for exactly this next step. */}
+        {onNav && (
+          <Reveal variant="rise" distance={20} delay={80}>
+            <Magnetic><button className="btn lift" onClick={() => onNav("connect")}
+              style={{ ...btnPurple, padding: "13px 24px", borderRadius: 12, fontSize: 15 }}>
+              Get Involved
+            </button></Magnetic>
+          </Reveal>
+        )}
+        {onNav && (
+          <Reveal variant="rise" distance={20} delay={140}>
+            <button className="btn lift" onClick={() => onNav("moments")}
+              style={{ padding: "13px 24px", borderRadius: 12, fontWeight: 700, fontSize: 15,
+                background: "transparent", color: "var(--text)", cursor: "pointer",
+                border: "1px solid var(--border-strong)", fontFamily: "inherit" }}>
+              Learn More
+            </button>
+          </Reveal>
+        )}
+      </div>
     </Band>
   );
 }
@@ -5341,7 +5396,7 @@ function Footer({ onAdmin, data, onNav }) {
     { title: "Community", items: [
       { label: "Board", id: "board" },
       { label: "Islamic House", id: "islamic-house" },
-      { label: "Announcements", id: "announcements" },
+      { label: "Announcements", id: "home" },
       { label: "Connect", id: "connect" },
     ]},
     { title: "Support", items: [
