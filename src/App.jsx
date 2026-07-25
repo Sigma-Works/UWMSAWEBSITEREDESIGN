@@ -50,6 +50,24 @@ const NEON_GOLD = "#FFD23F";
 
 const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-hoodie";
 
+// Admin-entered links (board member socials, sponsor sites, announcement
+// links, etc.) sometimes get typed without a scheme, e.g.
+// "linkedin.com/in/zahid" instead of "https://linkedin.com/in/zahid". The
+// admin field shows exactly what was typed, so that looks totally normal —
+// but as an <a href> it's a RELATIVE link, which the browser resolves
+// against the current page. On GitHub Pages that silently turns it into
+// ".../UWMSAWEBSITEREDESIGN/linkedin.com/in/zahid" instead of leaving the
+// site, i.e. a link that looks fine in the admin panel but is broken on the
+// live site. This adds "https://" onto anything that isn't already an
+// absolute URL, a mailto:/tel: link, or an in-page "#anchor".
+function safeHref(url) {
+  if (!url) return url;
+  const trimmed = String(url).trim();
+  if (!trimmed) return trimmed;
+  if (/^([a-z][a-z0-9+.-]*:|#)/i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 /* Nav is grouped so it stays readable as the site grows. Top-level items
    show on desktop; `children` render in a dropdown. On mobile everything
    flattens into one scrollable list. */
@@ -2819,7 +2837,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
                   const kind = ANN_KINDS[a.kind] || ANN_KINDS.notice;
                   const Wrapper = a.href ? "a" : "div";
                   const wrapProps = a.href
-                    ? { href: a.href, target: "_blank", rel: "noopener noreferrer" } : {};
+                    ? { href: safeHref(a.href), target: "_blank", rel: "noopener noreferrer" } : {};
                   return (
                     <Wrapper key={a.id} {...wrapProps} className="lift" style={{
                       display: "block", padding: 0, overflow: "hidden", height: "100%",
@@ -2914,7 +2932,7 @@ function SponsorsSection({ data }) {
           return (
             <Reveal key={s.id} delay={n * 70} variant="scale" distance={22} duration={DUR.slow}>
               {s.url ? (
-                <a href={s.url} target="_blank" rel="noopener noreferrer"
+                <a href={safeHref(s.url)} target="_blank" rel="noopener noreferrer"
                   className="lift" style={boxStyle} title={`Visit ${s.name}`}>{inner}</a>
               ) : (
                 <div className="lift" style={boxStyle}>{inner}</div>
@@ -3476,7 +3494,18 @@ function Gallery({ items }) {
     };
   }, [reduced, n]);
 
-  if (n === 0) return null;
+  // No photos added yet — a small, compact note instead of rendering
+  // nothing (which just left the section looking like a mostly-empty
+  // title with a lot of unexplained space under it).
+  if (n === 0) {
+    return (
+      <div style={{ padding: "22px 20px", borderRadius: 16, textAlign: "center",
+        background: "var(--tint)", border: "1px dashed var(--border-strong)",
+        color: "var(--text-faint)", fontSize: 14 }}>
+        Photos coming soon — add some from the admin panel.
+      </div>
+    );
+  }
 
   // Reduced-motion fallback: a plain static grid of rectangular photos,
   // fully visible immediately, no spinning ring at all.
@@ -3539,16 +3568,26 @@ function Gallery({ items }) {
            space" under Moments from the Year: ~120vh of pure dead scroll
            after the pin released, PLUS the sticky panel itself padding the
            (much shorter) carousel out to a full screen height with blank
-           margins above/below. Trimming both: a shorter runway still gives
-           plenty of scroll distance to drive the spin smoothly, and the
-           sticky panel now sizes to its content (+ breathing room) instead
-           of always claiming 100vh. */
-        .carousel-wrap { position: relative; min-height: 145vh; }
+           margins above/below.
+
+           Correction: dropping the sticky panel's forced 100vh (previous
+           note above) turned out to be the wrong fix — it made the sticky
+           panel only as tall as its own content (the scene + arrows +
+           caption, often well under 100vh), and since it's pinned at
+           top:0 rather than vertically centered in the remaining space,
+           whatever's left of the viewport below it just showed bare
+           section background for the ENTIRE scroll-through duration — a
+           much bigger, more obvious "empty space under the carousel" than
+           before. Restoring min-height:100vh here so the pinned panel
+           always fills the screen while it's pinned (no bleed-through
+           gap), and instead keeping the *wrap* short (140vh — only ~40vh
+           of actual scroll runway past the pinned 100vh) so there's
+           barely any dead scroll once the pin releases either. */
+        .carousel-wrap { position: relative; min-height: 140vh; }
         .carousel-sticky {
-          position: sticky; top: 0; width: 100%;
+          position: sticky; top: 0; min-height: 100vh; width: 100%;
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           overflow: hidden; gap: clamp(14px, 3vh, 30px);
-          padding: clamp(24px, 6vh, 64px) 0;
         }
         .carousel-row {
           width: min(96vw, 1300px); display: flex; align-items: center; justify-content: center;
@@ -4209,7 +4248,7 @@ function AnnouncementBar({ bar, onNav }) {
               {label} <ChevronRight size={13} />
             </button>
           ) : (
-            <a href={bar.href} target="_blank" rel="noopener noreferrer" className="barlink">
+            <a href={safeHref(bar.href)} target="_blank" rel="noopener noreferrer" className="barlink">
               {label} <ChevronRight size={13} />
             </a>
           )
@@ -4517,15 +4556,28 @@ function SearchOverlay({ open, onClose, data, onNav }) {
 /* Defers loading the tree (and anime.js with it) until the section is close
    to the viewport, so the initial page load stays light.
    Back to a single tree — the three-tree grove tried here didn't land, so
-   this reverts to the one centered tree it was before. */
+   this reverts to the one centered tree it was before.
+   The reserved space below (while waiting to scroll into view, or while
+   the lazy chunk is still loading) used to be a flat, empty div with no
+   background of its own — sitting on this section's dark gradient, that
+   read as a plain black rectangle under the "importance of donating" copy
+   rather than looking like part of the design. Giving it the same soft
+   gold ground-glow the tree itself has means there's always *something*
+   there instead of a dead rectangle, whichever state it's in. */
 function LazyQuadTree({ reduced }) {
   const [ref, near] = useInView({ threshold: 0, rootMargin: "600px 0px" });
+  const glow = (
+    <div aria-hidden="true" style={{ position: "absolute", left: "50%", bottom: "10%",
+      width: 280, height: 50, marginLeft: -140, borderRadius: "50%", filter: "blur(26px)",
+      background: `radial-gradient(ellipse, ${GOLD}22 0%, transparent 70%)` }} />
+  );
   return (
-    <div ref={ref} style={{ minHeight: 430, display: "flex", alignItems: "flex-end",
-      justifyContent: "center" }}>
+    <div ref={ref} style={{ position: "relative", minHeight: 380, display: "flex",
+      alignItems: "flex-end", justifyContent: "center" }}>
+      {!near && glow}
       {near && (
-        <React.Suspense fallback={<div style={{ height: 430, width: "100%" }} />}>
-          <QuadTree reduced={reduced} height={420}
+        <React.Suspense fallback={<div style={{ position: "relative", height: 380, width: "100%" }}>{glow}</div>}>
+          <QuadTree reduced={reduced} height={380}
             accent={PINK} bark="#6b5545" gold={GOLD}
             petalColors={[PINK, "#e8c4d4", MAUVE]} />
         </React.Suspense>
@@ -4709,12 +4761,12 @@ function DonateSection({ data }) {
 
         <Reveal delay={620} variant="up" distance={18}>
           <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
-            <a className="btn" href={d.msaUrl} target="_blank" rel="noopener noreferrer"
+            <a className="btn" href={safeHref(d.msaUrl)} target="_blank" rel="noopener noreferrer"
               style={{ ...btnGold, textDecoration: "none", display: "inline-flex",
                 alignItems: "center", gap: 9, fontSize: 16, padding: "15px 32px" }}>
               <Heart size={18} /> Donate to MSA
             </a>
-            <a className="btn" href={d.houseUrl} target="_blank" rel="noopener noreferrer"
+            <a className="btn" href={safeHref(d.houseUrl)} target="_blank" rel="noopener noreferrer"
               style={{ ...btnGhost, textDecoration: "none", display: "inline-flex",
                 alignItems: "center", gap: 9, fontSize: 16, padding: "15px 32px" }}>
               Support the Islamic House
@@ -4806,14 +4858,14 @@ function IslamicHouseSection({ data }) {
                 )}
                 <div style={{ display: "grid", gap: 9, marginTop: 4 }}>
                   {h.mapUrl && (
-                    <a className="btn" href={h.mapUrl} target="_blank" rel="noopener noreferrer"
+                    <a className="btn" href={safeHref(h.mapUrl)} target="_blank" rel="noopener noreferrer"
                       style={{ ...btnPurple, textDecoration: "none", textAlign: "center",
                         display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
                       <MapPin size={15} /> Open in Maps
                     </a>
                   )}
                   {h.donateUrl && (
-                    <a className="btn" href={h.donateUrl} target="_blank" rel="noopener noreferrer"
+                    <a className="btn" href={safeHref(h.donateUrl)} target="_blank" rel="noopener noreferrer"
                       style={{ ...btnGold, textDecoration: "none", textAlign: "center",
                         display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
                       <Heart size={15} /> Support the House
@@ -5003,7 +5055,7 @@ function BoardSection({ data }) {
                   </div>
                   <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                     {openMember.href && (
-                      <a className="btn" href={openMember.href} target="_blank" rel="noopener noreferrer"
+                      <a className="btn" href={safeHref(openMember.href)} target="_blank" rel="noopener noreferrer"
                         style={{ ...btnPurple, textDecoration: "none", display: "inline-flex",
                           alignItems: "center", gap: 7 }}>
                         Visit <ExternalLink size={14} />
@@ -5134,7 +5186,7 @@ function NewHereSection({ data, onNav }) {
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
         {nh.href && (
           <Reveal variant="rise" distance={20}>
-            <a href={nh.href} target="_blank" rel="noopener noreferrer" className="btn lift"
+            <a href={safeHref(nh.href)} target="_blank" rel="noopener noreferrer" className="btn lift"
               style={{ display: "inline-flex", alignItems: "center", gap: 9,
                 padding: "13px 24px", borderRadius: 12, textDecoration: "none",
                 fontWeight: 700, fontSize: 15, color: "#2c2418",
@@ -5315,7 +5367,7 @@ function ConnectSection({ data }) {
 function LinkCard({ link: l, bg }) {
   const [hover, setHover] = useState(false);
   return (
-    <a href={l.href} target="_blank" rel="noopener noreferrer" className="lift"
+    <a href={safeHref(l.href)} target="_blank" rel="noopener noreferrer" className="lift"
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{ ...card, padding: "22px 24px", display: "flex", alignItems: "center", gap: 16,
         textDecoration: "none", height: "100%" }}>
@@ -5373,8 +5425,8 @@ function Footer({ onAdmin, data, onNav }) {
       { label: "Connect", id: "connect" },
     ]},
     { title: "Support", items: [
-      { label: "Donate to MSA", href: donate.msaUrl },
-      { label: "Support Islamic House", href: donate.houseUrl },
+      { label: "Donate to MSA", href: safeHref(donate.msaUrl) },
+      { label: "Support Islamic House", href: safeHref(donate.houseUrl) },
       { label: "Sponsors", id: "sponsors" },
     ]},
   ];
@@ -5450,7 +5502,7 @@ function Footer({ onAdmin, data, onNav }) {
 
         {/* Donate strip */}
         <div style={{ maxWidth: 1200, margin: "34px auto 0" }}>
-          <a className="btn" href={donate.msaUrl} target="_blank" rel="noopener noreferrer"
+          <a className="btn" href={safeHref(donate.msaUrl)} target="_blank" rel="noopener noreferrer"
             style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9,
               padding: "14px 22px", borderRadius: 12, textDecoration: "none",
               fontWeight: 700, fontSize: 15, color: "#2c2418",
