@@ -2605,7 +2605,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
     if (!stage || !section) return;
     if (reduced) {
       utils.set(section.querySelectorAll(
-        ".hero-kicker,.hero-ann-head,.hero-ann-cards,.hero-logo-mark"
+        ".hero-ann-head,.hero-ann-cards,.hero-logo-mark"
       ), { opacity: 1, translateY: 0, scale: 1, filter: "blur(0px)" });
       return;
     }
@@ -2620,10 +2620,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
       }, "-=250")
       .add(stage.querySelector(".hero-ann-cards"), {
         opacity: [0, 1], translateY: [22, 0], duration: 600,
-      }, "-=200")
-      .add(stage.querySelector(".hero-kicker"), {
-        opacity: [0, 1], translateY: [16, 0], duration: 500,
-      }, "-=150");
+      }, "-=200");
 
     return () => tl?.revert?.();
   }, [curtainDone, reduced]);
@@ -2769,7 +2766,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
         </div>
 
         <div ref={stageRef} style={{ maxWidth: 960, margin: "0 auto", position: "relative", zIndex: 2,
-          textAlign: "center", paddingBottom: 90 }}>
+          textAlign: "center", paddingBottom: 56 }}>
 
           {/* Spacer — the logo above is absolutely positioned (so it can be
               pinned to the rosary wheel's center), so this holds open the
@@ -2806,14 +2803,16 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             )}
           </div>
 
-          <div ref={announceRef} className="hero-ann-cards" style={{ opacity: 0, marginTop: 32, textAlign: "left" }}>
-            {sortedAnnouncements.length === 0 ? (
-              <div style={{ padding: "22px 20px", borderRadius: 16, textAlign: "center",
-                background: "rgba(255,255,255,.06)", border: "1px solid rgba(201,182,136,.28)",
-                color: "rgba(255,255,255,.6)", fontSize: 14 }}>
-                Nothing new right now — check back soon.
-              </div>
-            ) : (
+          {/* When there's nothing to show, this renders empty (zero height)
+              rather than a placeholder card — a dark, semi-transparent
+              "nothing new" box sitting on the already-dark hero backdrop
+              read as a stray black box, and it was the whole reason for
+              extra empty space here when no announcements were set. The
+              ref stays on the wrapper either way so the arch above still
+              has something to measure and size itself against. */}
+          <div ref={announceRef} className="hero-ann-cards"
+            style={{ opacity: 0, marginTop: sortedAnnouncements.length ? 32 : 0, textAlign: "left" }}>
+            {sortedAnnouncements.length > 0 && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
                 gap: 14 }}>
                 {sortedAnnouncements.map((a) => {
@@ -2864,19 +2863,6 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
               </div>
             )}
           </div>
-
-          {/* "Est. 1968" pill — sits below the announcements and doubles as
-              a link down to the About section instead of being purely
-              decorative. */}
-          <button className="hero-kicker btn" onClick={() => onNav("about")}
-            aria-label="Jump to the About section"
-            style={{ opacity: 0, display: "inline-flex", alignItems: "center", gap: 8,
-              padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.16)",
-              border: `1px solid rgba(201,182,136,.4)`, marginTop: 32, cursor: "pointer",
-              color: "inherit", font: "inherit" }}>
-            <Star8 size={16} color={GOLD} /> <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: ".5px" }}>
-              {data.hero.kicker ?? seed.hero.kicker}</span>
-          </button>
         </div>
         <ScrollCue onClick={() => onNav("moments")} />
         {/* girih band along the base of the hero */}
@@ -4529,17 +4515,9 @@ function SearchOverlay({ open, onClose, data, onNav }) {
 }
 
 /* Defers loading the tree (and anime.js with it) until the section is close
-   to the viewport, so the initial page load stays light. */
-/* A small grove instead of one lone tree — three trees with different
-   seeds/heights/opacities (so they read as distinct trees, not clones),
-   all lazy-mounted together behind a single shared IntersectionObserver
-   rather than one per tree. The center tree is the tallest/fullest —
-   reads as the "main" one, with two smaller ones flanking it for depth. */
-const GROVE = [
-  { seed: 41, height: 320, depth: 5, opacity: 0.55 },
-  { seed: 11, height: 430, depth: 6, opacity: 1 },
-  { seed: 23, height: 340, depth: 5, opacity: 0.6 },
-];
+   to the viewport, so the initial page load stays light.
+   Back to a single tree — the three-tree grove tried here didn't land, so
+   this reverts to the one centered tree it was before. */
 function LazyQuadTree({ reduced }) {
   const [ref, near] = useInView({ threshold: 0, rootMargin: "600px 0px" });
   return (
@@ -4547,14 +4525,9 @@ function LazyQuadTree({ reduced }) {
       justifyContent: "center" }}>
       {near && (
         <React.Suspense fallback={<div style={{ height: 430, width: "100%" }} />}>
-          {GROVE.map((t, i) => (
-            <div key={t.seed} style={{ flex: "1 1 0", minWidth: 0, maxWidth: 380,
-              opacity: t.opacity, marginLeft: i === 0 ? 0 : -24 }}>
-              <QuadTree reduced={reduced} height={t.height} seed={t.seed} depth={t.depth}
-                accent={PINK} bark="#6b5545" gold={GOLD}
-                petalColors={[PINK, "#e8c4d4", MAUVE]} />
-            </div>
-          ))}
+          <QuadTree reduced={reduced} height={420}
+            accent={PINK} bark="#6b5545" gold={GOLD}
+            petalColors={[PINK, "#e8c4d4", MAUVE]} />
         </React.Suspense>
       )}
     </div>
