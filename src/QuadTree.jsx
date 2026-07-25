@@ -86,13 +86,20 @@ export default function QuadTree({
   petalColors = ["#b4788c", "#e8c4d4", "#a078a8"],
   reduced = false,
   height = 420,
+  // Drives both the branch layout and the petal scatter. Different seeds
+  // (e.g. when rendering several trees together as a grove) produce
+  // genuinely different-looking trees instead of identical clones —
+  // still deterministic per seed, so the same tree redraws the same way
+  // on every visit.
+  seed = 11,
+  depth = 6,
 }) {
   const rootRef = useRef(null);
   const [drawn, setDrawn] = useState(reduced);
-  const { branches, blossoms } = useMemo(() => buildTree({ seed: 11 }), []);
+  const { branches, blossoms } = useMemo(() => buildTree({ seed, depth }), [seed, depth]);
 
   const petals = useMemo(() => {
-    const rnd = mulberry32(29);
+    const rnd = mulberry32(seed * 2 + 7);
     return Array.from({ length: 18 }, (_, i) => ({
       id: i,
       left: 8 + rnd() * 84,
@@ -103,7 +110,7 @@ export default function QuadTree({
       spin: (rnd() < 0.5 ? -1 : 1) * (200 + rnd() * 400),
       color: petalColors[i % petalColors.length],
     }));
-  }, [petalColors]);
+  }, [petalColors, seed]);
 
   useEffect(() => {
     if (reduced) { setDrawn(true); return; }
