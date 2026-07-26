@@ -1879,14 +1879,16 @@ function StyleTag() {
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
-        /* Slowed from 3.2s -> 7s per feedback that the flash felt too
-           fast/frequent. */
-        animation: shineSweep 7s ${EASE.inOut} infinite;
+        /* Repeats every 3s (that cadence was fine), but now sweeps
+           continuously across the whole cycle instead of finishing the
+           traverse in ~55% of it and holding still the rest of the way —
+           same distance covered, roughly half the speed, and no more
+           abrupt snap-back when it loops. */
+        animation: shineSweep 3s ${EASE.inOut} infinite;
         animation-delay: 1.1s;
       }
       @keyframes shineSweep {
         0%   { background-position: 200% 0; }
-        55%  { background-position: -60% 0; }
         100% { background-position: -60% 0; }
       }
 
