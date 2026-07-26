@@ -2255,9 +2255,16 @@ function useLiveMasjidalTimes(masjidId) {
   return liveTimes;
 }
 
-function NextPrayerTimer({ times, compact = false }) {
+// All the "figure out what's next and how long until it" logic, lifted
+// out of the pill component itself so Nav can call this ONCE and render
+// the pill twice (desktop bar + mobile bar) off the same computed state.
+// Two separately-mounted NextPrayerTimers used to mean two independent
+// tickers and two independent attempts at the live AthanPlus fetch —
+// harmless individually, but pointless duplication for something that's
+// identical either way, and content the "run smoothly, minimal memory"
+// standard this whole rebuild has been held to.
+function usePrayerCountdown(times) {
   const [now, setNow] = useState(() => new Date());
-  const [open, setOpen] = useState(false);
   const liveTimes = useLiveMasjidalTimes(times?.masjidalId);
   // Live-fetched values win when present; anything the fetch didn't
   // cover (or couldn't get at all) falls back to the manual fields.
@@ -2299,23 +2306,27 @@ function NextPrayerTimer({ times, compact = false }) {
   const pad = (n) => String(n).padStart(2, "0");
   const countdown = hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
 
+  return { next, countdown };
+}
+
+// Pure presentational pill — no fetching or ticking of its own, just
+// renders whatever usePrayerCountdown handed it. Safe to mount more than
+// once (desktop bar, mobile bar) since it's just a button.
+function PrayerCountdownPill({ next, countdown, compact = false, onClick }) {
   return (
-    <>
-      <button onClick={() => setOpen(true)} title="Prayer times"
-        aria-label={`Next prayer ${next.name} in ${countdown}`}
-        style={{ display: "inline-flex", alignItems: "center", gap: 7,
-          padding: compact ? "7px 12px" : "8px 14px", borderRadius: 999,
-          border: "1px solid var(--border)", background: "var(--tint)",
-          cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
-          color: "var(--text)", fontSize: compact ? 12.5 : 13, fontWeight: 600 }}>
-        <Clock size={compact ? 13 : 14} color="var(--accent)" />
-        <span style={{ color: "var(--text-muted)" }}>{next.name} in</span>
-        <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--accent)" }}>
-          {countdown}
-        </span>
-      </button>
-      {open && <MasjidalPopup times={times} onClose={() => setOpen(false)} />}
-    </>
+    <button onClick={onClick} title="Prayer times"
+      aria-label={`Next prayer ${next.name} in ${countdown}`}
+      style={{ display: "inline-flex", alignItems: "center", gap: 7,
+        padding: compact ? "7px 12px" : "8px 14px", borderRadius: 999,
+        border: "1px solid var(--border)", background: "var(--tint)",
+        cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+        color: "var(--text)", fontSize: compact ? 12.5 : 13, fontWeight: 600 }}>
+      <Clock size={compact ? 13 : 14} color="var(--accent)" />
+      <span style={{ color: "var(--text-muted)" }}>{next.name} in</span>
+      <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--accent)" }}>
+        {countdown}
+      </span>
+    </button>
   );
 }
 
@@ -2473,6 +2484,10 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
   const [progress, setProgress] = useState(0);
   const [openMenu, setOpenMenu] = useState(null);  // which dropdown is open
   const navRef = useRef(null);
+  // Computed once here (not per-pill) so the desktop and mobile countdown
+  // pills below share one ticker/fetch instead of each running their own.
+  const countdown = usePrayerCountdown(prayerTimes);
+  const [prayerOpen, setPrayerOpen] = useState(false);
 
   useEffect(() => {
     let ticking = false, raf = 0;
@@ -2543,7 +2558,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         opacity: progress > 0.005 ? 1 : 0,
         transition: `opacity ${DUR.base}ms ${EASE.out}` }} />
 
-      <nav style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px",
+      <nav style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px", position: "relative",
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <button className="btn logomark" onClick={() => onNav("/")} aria-label="MSA at UW — home"
           style={{ display: "flex", alignItems: "center", gap: 10, background: "none",
@@ -2554,6 +2569,26 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
               transform: solid ? "scale(.86)" : "scale(1)",
               transition: `transform ${DUR.base}ms ${EASE.out}` }} />
         </button>
+
+        {/* ── Mobile-only countdown pill ───────────────────────────────
+            NextPrayerTimer/PrayerCountdownPill previously only rendered
+            once, inside .desk (hidden below 980px) — mobile visitors
+            never saw it at all, not even tucked into the hamburger menu.
+            This is the same shared countdown state (see usePrayerCountdown
+            above), just a second PrayerCountdownPill shown only under the
+            980px breakpoint (nav .mob { display: flex !important }, see
+            the media query below) and absolutely centered against <nav>
+            (position:relative, above) rather than relying on flexbox
+            space-between to land it in the middle — that'd only be
+            approximately centered, and its exact position would depend on
+            the logo and hamburger button happening to be the same width. */}
+        {countdown && (
+          <div className="mob" style={{ display: "none", position: "absolute",
+            left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}>
+            <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
+              compact onClick={() => setPrayerOpen(true)} />
+          </div>
+        )}
 
         {/* ── Desktop ─────────────────────────────────────────────────── */}
         <div className="desk" style={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -2587,7 +2622,10 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             );
           })}
 
-          <NextPrayerTimer times={prayerTimes} />
+          {countdown && (
+            <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
+              onClick={() => setPrayerOpen(true)} />
+          )}
           <button className="btn" onClick={onSearch} aria-label="Search the site"
             title="Search (⌘K)" style={iconBtn}>
             <Search size={16} color="var(--accent)" />
@@ -2702,6 +2740,11 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         @media (max-width: 980px) { .desk { display: none !important; } .mob { display: block !important; } }
         @media (max-width: 980px) { nav .mob { display: flex !important; } }
       `}</style>
+
+      {/* Single shared popup regardless of which pill (desktop or mobile)
+          opened it — avoids mounting MasjidalPopup twice for what's the
+          same dialog either way. */}
+      {prayerOpen && <MasjidalPopup times={prayerTimes} onClose={() => setPrayerOpen(false)} />}
     </>
   );
 }
