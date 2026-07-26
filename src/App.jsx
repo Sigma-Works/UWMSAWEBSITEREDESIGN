@@ -17,7 +17,7 @@ Instagram, Facebook, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
   Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Search,
-  Settings, Camera
+  Settings, Camera, ArrowUp, ArrowDown
 } from "lucide-react";
 
 /* ============================================================
@@ -60,11 +60,24 @@ const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-
 // site, i.e. a link that looks fine in the admin panel but is broken on the
 // live site. This adds "https://" onto anything that isn't already an
 // absolute URL, a mailto:/tel: link, or an in-page "#anchor".
+// Schemes an admin-entered link is actually allowed to use. Anything else
+// with an explicit "scheme:" prefix (javascript:, data:, vbscript:, file:,
+// etc.) gets neutralized to "#" instead of being handed to an <a href> —
+// those are the classic stored-XSS vectors when free-text URL fields (board
+// member links, sponsor URLs, prayer-space map links, …) get rendered back
+// out as real hrefs. This doesn't require a login to exploit in itself, but
+// it closes off the easiest version of "an admin account gets phished/
+// compromised, then used to plant a javascript: link that fires for every
+// visitor" — worth doing even though only admins can edit this content.
+const SAFE_HREF_SCHEMES = /^(https?|mailto|tel):/i;
 function safeHref(url) {
   if (!url) return url;
   const trimmed = String(url).trim();
   if (!trimmed) return trimmed;
-  if (/^([a-z][a-z0-9+.-]*:|#)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("#")) return trimmed;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return SAFE_HREF_SCHEMES.test(trimmed) ? trimmed : "#";
+  }
   return `https://${trimmed}`;
 }
 
@@ -437,7 +450,15 @@ function useEnclosingBox(sectionRef, startRef, endRef, widthRefs, padding = 36) 
       const sBox = section.getBoundingClientRect();
       const aBox = start.getBoundingClientRect();
       const bBox = end.getBoundingClientRect();
-      const top = aBox.top - sBox.top - padding;
+      // Clamp to 0: the section has overflow:hidden, so a negative top
+      // (which happens whenever the rosette sits closer to the section's
+      // top edge than `padding`) used to push the arch's peak above the
+      // section's own boundary and get clipped off — "arch not fully
+      // visible" at the top. Clamping keeps the box fully inside the
+      // section while leaving `bottom` (and therefore where the arch's
+      // base lands) untouched.
+      const rawTop = aBox.top - sBox.top - padding;
+      const top = Math.max(rawTop, 0);
       const bottom = bBox.bottom - sBox.top + padding;
       let width = 0;
       widthRefs.forEach((r) => {
@@ -578,7 +599,10 @@ function inlineMd(text, keyPrefix = "m") {
     } else {
       const close = tok.indexOf("](");
       const label = tok.slice(1, close);
-      const href = tok.slice(close + 2, -1);
+      // Same scheme allowlist as every other admin-entered URL in the
+      // site (safeHref) — markdown links were the one place a raw
+      // javascript:/data: href could still slip through untouched.
+      const href = safeHref(tok.slice(close + 2, -1));
       const external = /^https?:\/\//i.test(href);
       nodes.push(
         <a key={`${keyPrefix}-a${i++}`} href={href}
@@ -1237,11 +1261,19 @@ const seed = {
     { id: 5, name: "Ummah Foods", logo: "" },
     { id: 6, name: "Crescent Realty", logo: "" },
   ],
+  // mapUrl defaults to a Google Maps search for the building name (not a
+  // pinned address — nobody's verified exact coordinates for these rooms)
+  // so "Open in Maps" is useful out of the box; admins can overwrite with
+  // an exact link any time from the Prayer spaces tab.
   prayerSpaces: [
-    { id: 1, name: "HUB Reflection Room", loc: "Husky Union Building, Room 145", note: "Open during building hours · wudu station nearby" },
-    { id: 2, name: "Islamic House", loc: "Near NE 45th St", note: "Full masjid · all five daily prayers" },
-    { id: 3, name: "Odegaard Quiet Room", loc: "Odegaard Library, Ground Floor", note: "Quiet reflection · prayer mats available" },
-    { id: 4, name: "Engineering Prayer Space", loc: "ECE Building", note: "Reservable · check MSA Discord for access" },
+    { id: 1, name: "HUB Reflection Room", loc: "Husky Union Building, Room 145", note: "Open during building hours · wudu station nearby",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Husky+Union+Building+University+of+Washington" },
+    { id: 2, name: "Islamic House", loc: "Near NE 45th St", note: "Full masjid · all five daily prayers",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Islamic+House+University+of+Washington" },
+    { id: 3, name: "Odegaard Quiet Room", loc: "Odegaard Library, Ground Floor", note: "Quiet reflection · prayer mats available",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Odegaard+Undergraduate+Library+University+of+Washington" },
+    { id: 4, name: "Engineering Prayer Space", loc: "ECE Building", note: "Reservable · check MSA Discord for access",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Paul+Allen+Center+University+of+Washington" },
   ],
   prayerTimes: {
     // ── Masjidal live widget ──────────────────────────────────────────────
@@ -1597,7 +1629,13 @@ export default function App() {
       <HeroCurtain progress={loadProgress} onDone={() => setCurtainDone(true)} />
       {petals && <SakuraWind dark={dark} />}
       <AnnouncementBar bar={data.bar} onNav={scrollTo} />
-      <Nav active={active} onNav={scrollTo} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
+      {/* Nav highlights by page ROUTE ("/", "/about", …), not by the
+          scroll-spy section id — `active` holds section ids (e.g. "home",
+          "prayer") which never match a NAV item's `route`, so the old
+          `active={active}` wiring meant the current-page indicator could
+          never actually light up. `route` always holds the current page
+          path, so that's what Nav needs for aria-current/highlighting. */}
+      <Nav active={route} onNav={scrollTo} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
            onAdmin={() => setAdminOpen(true)} isAdmin={isAdmin}
            dark={dark} onToggleDark={() => setDark((d) => !d)}
            petals={petals} onTogglePetals={() => setPetals((p) => !p)}
@@ -1768,6 +1806,28 @@ function StyleTag() {
         transition: left ${DUR.fast}ms ${EASE.out}, right ${DUR.fast}ms ${EASE.out};
       }
       .navlink:hover::after { left: 14px; right: 14px; }
+
+      /* ── Shiny sweep text — a bright purple highlight sweeps through the
+         gold eyebrow labels on an endless loop (section kickers like "OUR
+         HOME ON CAMPUS"). GPU-cheap: only background-position animates.
+         Reduced-motion users never get this class in the first place (see
+         Eyebrow), so there's no separate override needed here. ── */
+      .shiny-text {
+        background-image: linear-gradient(100deg,
+          ${GOLD} 35%, ${NEON_PURPLE} 50%, ${GOLD} 65%);
+        background-size: 240% 100%;
+        background-position: 200% 0;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: shineSweep 3.2s ${EASE.inOut} infinite;
+        animation-delay: 1.1s;
+      }
+      @keyframes shineSweep {
+        0%   { background-position: 200% 0; }
+        55%  { background-position: -60% 0; }
+        100% { background-position: -60% 0; }
+      }
 
       /* ── Ambient background glow (very slow, very soft) ─────────────── */
       @keyframes glowDrift {
@@ -2295,8 +2355,13 @@ function Eyebrow({ children }) {
         transition: reduced ? "none"
           : `opacity ${DUR.base}ms ${EASE.out}, transform ${DUR.slow}ms ${EASE.spring}`,
       }}><Star8 size={16} /></span>
-      <span style={{ textTransform: "uppercase", letterSpacing: "2px", fontSize: 12.5,
-        fontWeight: 700, color: GOLD,
+      {/* shiny-text sweeps a bright purple highlight through the gold
+          label on a loop — purely decorative, so it's applied via a class
+          (not inline color) so prefers-reduced-motion users, who get the
+          animation frozen by the global media query above, still land on
+          a normal solid-looking label rather than a half-swept gradient. */}
+      <span className={reduced ? "" : "shiny-text"} style={{ textTransform: "uppercase", letterSpacing: "2px", fontSize: 12.5,
+        fontWeight: 700, color: reduced ? GOLD : undefined,
         opacity: show ? 1 : 0,
         transform: show ? "translate3d(0,0,0)" : "translate3d(-10px,0,0)",
         transition: reduced ? "none"
@@ -2941,8 +3006,14 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
           </div>
         </div>
         <ScrollCue onClick={() => onNav("moments")} />
-        {/* girih band along the base of the hero */}
-        <div style={{ position: "relative" }}>
+        {/* girih band along the base of the hero — marginTop gives it
+            extra clearance so it doesn't visually collide with the arch's
+            base line. The arch is absolutely positioned (it doesn't push
+            this flow content down on its own) and extends `padding` (56px)
+            below the announcement cards, while the cards' wrapper only has
+            24px of paddingBottom — without this gap the arch's bottom edge
+            ran a good ~30px into the band below it. */}
+        <div style={{ position: "relative", marginTop: 40 }}>
           <GirihBand color="rgba(183,165,122,.45)" height={54} opacity={1} unit={54} />
         </div>
         <style>{`
@@ -3668,6 +3739,13 @@ function PrayerSection({ data }) {
                 <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>{s.name}</h3>
                 <div style={{ color: "var(--text-muted)", fontSize: 14.5, marginBottom: 6 }}>{s.loc}</div>
                 <div style={{ color: "var(--text-faint)", fontSize: 13.5 }}>{s.note}</div>
+                {s.mapUrl && (
+                  <a href={safeHref(s.mapUrl)} target="_blank" rel="noopener noreferrer"
+                    style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5,
+                      fontSize: 12.5, fontWeight: 700, color: "var(--accent)", textDecoration: "none" }}>
+                    <MapPin size={12} /> Open in Maps
+                  </a>
+                )}
               </div>
             </div>
             </Reveal>
@@ -4744,14 +4822,20 @@ function IslamicHouseSection({ data }) {
   const h = data.islamicHouse || seed.islamicHouse;
   return (
     <Band id="islamic-house" lattice rosettes="both" decor="right" light lightTone="gold" lightAt="bottom-right">
-      <SectionCopy data={data} sectionKey="islamicHouse" />
       {/* tasbih swaying quietly in the margin */}
       <Parallax speed={0.16} style={{ top: 90, right: "2%" }}>
         <Tasbih height={230} opacity={0.32} color="var(--rosette)" />
       </Parallax>
+      {/* SectionCopy (eyebrow/title/intro) used to sit full-width above
+          this grid, which pushed the "Visit Islamic House" card well
+          below the heading instead of alongside it. Moving it inside the
+          left column means both columns now start at the same row (grid
+          has alignItems:"start"), so the card rides up flush with the
+          eyebrow/title instead of floating lower next to the body copy. */}
       <div style={{ display: "grid", gridTemplateColumns: "1.15fr .85fr", gap: 26,
         alignItems: "start" }} className="house-grid">
         <div>
+          <SectionCopy data={data} sectionKey="islamicHouse" />
           {h.body && (
             <Reveal variant="up" distance={18}>
               <div style={{ color: "var(--text-muted)", fontSize: 15.5, lineHeight: 1.75,
@@ -5169,7 +5253,8 @@ function NewHereSection({ data, onNav }) {
             after the hero, looking for exactly this next step. */}
         {onNav && (
           <Reveal variant="rise" distance={20} delay={80}>
-            <Magnetic><button className="btn lift" onClick={() => onNav("connect")}
+            {/* Get Involved -> Events page (the weekly/monthly calendar lives there). */}
+            <Magnetic><button className="btn lift" onClick={() => onNav("events")}
               style={{ ...btnPurple, padding: "13px 24px", borderRadius: 12, fontSize: 15 }}>
               Get Involved
             </button></Magnetic>
@@ -5177,7 +5262,8 @@ function NewHereSection({ data, onNav }) {
         )}
         {onNav && (
           <Reveal variant="rise" distance={20} delay={140}>
-            <button className="btn lift" onClick={() => onNav("moments")}
+            {/* Learn More -> About page. */}
+            <button className="btn lift" onClick={() => onNav("about")}
               style={{ padding: "13px 24px", borderRadius: 12, fontWeight: 700, fontSize: 15,
                 background: "transparent", color: "var(--text)", cursor: "pointer",
                 border: "1px solid var(--border-strong)", fontFamily: "inherit" }}>
@@ -5725,8 +5811,9 @@ function Editor({ tab, data, setData }) {
     return (
       <ListEditor title="Prayer spaces" items={data.prayerSpaces}
         onChange={(prayerSpaces) => up({ prayerSpaces })}
-        blank={{ name: "New space", loc: "Location", note: "" }}
-        fields={[["name", "Name"], ["loc", "Location"], ["note", "Note"]]} />
+        blank={{ name: "New space", loc: "Location", note: "", mapUrl: "" }}
+        fields={[["name", "Name"], ["loc", "Location"], ["note", "Note"],
+          ["mapUrl", "Google Maps link (optional)"]]} />
     );
 
   if (tab === "times") {
@@ -5891,7 +5978,12 @@ function Editor({ tab, data, setData }) {
           Photos upload to storage; the link is optional and opens when someone clicks the card.
           Move a member to “Previous” at the end of their term rather than deleting them.
         </p>
-        {groups.map(([status, label]) => (
+        {groups.map(([status, label]) => {
+          const groupIdxs = board.reduce((acc, m, idx) => {
+            if ((m.status || "current") === status) acc.push(idx);
+            return acc;
+          }, []);
+          return (
           <div key={status} style={{ marginBottom: 22 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
               marginBottom: 10 }}>
@@ -5906,9 +5998,16 @@ function Editor({ tab, data, setData }) {
                   textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
                   None yet</div>
               )}
-              {board.map((m, i) => (m.status || "current") !== status ? null : (
+              {/* Reorder within a group (Current / Previous) by swapping with the
+                  nearest neighbour that shares the same status — `i` below is
+                  the real index into the full `board` array, but `pos`/`groupIdxs`
+                  track this member's position within just its own group, since
+                  Current and Previous members are interleaved in the array. */}
+              {groupIdxs.map((i, pos) => {
+                const m = board[i];
+                return (
                 <div key={m.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-                  padding: 14, display: "grid", gap: 8, position: "relative" }}>
+                  padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
                   <ImageField label="Photo" value={m.img || ""} folder="board"
                     onChange={(url) => edit(i, { img: url })} />
                   <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
@@ -5943,14 +6042,23 @@ function Editor({ tab, data, setData }) {
                       <option value="previous">Previous</option>
                     </select>
                   </div>
-                  <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
-                    style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                    aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
+                  <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                    <button onClick={() => pos > 0 && setBoard(arraySwap(board, i, groupIdxs[pos - 1]))}
+                      disabled={pos === 0} style={pos === 0 ? moveBtnOff : moveBtn}
+                      aria-label={`Move ${m.name} up`}><ArrowUp size={14} /></button>
+                    <button onClick={() => pos < groupIdxs.length - 1 && setBoard(arraySwap(board, i, groupIdxs[pos + 1]))}
+                      disabled={pos === groupIdxs.length - 1} style={pos === groupIdxs.length - 1 ? moveBtnOff : moveBtn}
+                      aria-label={`Move ${m.name} down`}><ArrowDown size={14} /></button>
+                    <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
+                      style={delBtn} aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
-        ))}
+          );
+        })}
       </Section>
     );
   }
@@ -6581,18 +6689,36 @@ function ImageField({ value, onChange, folder = "gallery", label = "Image" }) {
     </div>
   );
 }
+// Swaps items i and j (both indices into `items`, keys preserved) — the
+// building block for every "move up / move down" reorder control. Pure/
+// immutable so it composes cleanly with the various setState callbacks
+// each admin tab already uses.
+function arraySwap(items, i, j) {
+  if (i < 0 || j < 0 || i >= items.length || j >= items.length) return items;
+  const c = items.slice();
+  [c[i], c[j]] = [c[j], c[i]];
+  return c;
+}
+
+const moveBtn = { background: "var(--tint)", color: "var(--accent)", border: "none", borderRadius: 8,
+  width: 30, height: 30, display: "grid", placeItems: "center", cursor: "pointer" };
+const moveBtnOff = { ...moveBtn, opacity: 0.3, cursor: "default" };
+
 function ListEditor({ title, items, onChange, blank, fields }) {
   const add = () => onChange([...items, { id: Date.now(), ...blank }]);
   const del = (i) => onChange(items.filter((_, n) => n !== i));
   const edit = (i, key, val) => { const c = [...items]; c[i] = { ...c[i], [key]: val }; onChange(c); };
+  const move = (i, dir) => onChange(arraySwap(items, i, i + dir));
   return (
     <Section title={title}>
       <button className="btn" onClick={add} style={{ ...btnPurple, marginBottom: 16, display: "inline-flex",
         alignItems: "center", gap: 6 }}><Plus size={16} /> Add</button>
+      {/* Reorder with the arrow buttons instead of deleting and re-adding —
+          position on the live site follows this list's order directly. */}
       <div style={{ display: "grid", gap: 14 }}>
         {items.map((it, i) => (
           <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-            padding: 14, display: "grid", gap: 8, position: "relative" }}>
+            padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
             {fields.map(([key, lbl, kind]) => (
               kind === "image" ? (
                 <ImageField key={key} label={lbl} value={it[key] || ""}
@@ -6605,8 +6731,13 @@ function ListEditor({ title, items, onChange, blank, fields }) {
                 </div>
               )
             ))}
-            <button onClick={() => del(i)} style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-              aria-label="Delete"><Trash2 size={15} /></button>
+            <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+              <button onClick={() => i > 0 && move(i, -1)} disabled={i === 0}
+                style={i === 0 ? moveBtnOff : moveBtn} aria-label="Move up"><ArrowUp size={14} /></button>
+              <button onClick={() => i < items.length - 1 && move(i, 1)} disabled={i === items.length - 1}
+                style={i === items.length - 1 ? moveBtnOff : moveBtn} aria-label="Move down"><ArrowDown size={14} /></button>
+              <button onClick={() => del(i)} style={delBtn} aria-label="Delete"><Trash2 size={15} /></button>
+            </div>
           </div>
         ))}
       </div>
