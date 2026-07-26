@@ -5641,30 +5641,56 @@ function InstagramProfileEmbed({ handle }) {
    public equivalent of Instagram's profile-grid iframe, so with no posts
    set this just shows a "Follow us" card instead of trying to fake a
    live feed. ── */
-function TikTokEmbed({ url }) {
+// Loads TikTok's embed.js once and re-triggers its scan for any embed
+// component (video or creator profile) mounted after the first load —
+// same idea as InstagramEmbed's loader above, just shared across both
+// TikTok embed kinds so there's one script tag total no matter how many
+// blockquotes end up on the page.
+function useTikTokEmbedScript(dep) {
   useEffect(() => {
-    const process = () => {
-      // TikTok's embed.js doesn't expose a re-scan API like Instagram's
-      // does — it scans on load and via a MutationObserver it sets up
-      // itself, so a fresh <blockquote> added later (e.g. an admin adds a
-      // video without a full page reload) is usually picked up on its
-      // own. Re-appending a fresh copy of the script is a harmless nudge
-      // if it isn't.
-    };
-    if (window.tiktokEmbedLoaded) { process(); return; }
-    const existing = document.querySelector('script[src="https://www.tiktok.com/embed.js"]');
-    if (existing) return;
+    // embed.js scans the page for tiktok-embed blockquotes on its own
+    // load and sets up a MutationObserver for anything added afterward
+    // (e.g. an admin adding a video/handle without a full page reload),
+    // so all this needs to do is make sure exactly one copy of the
+    // script tag ever gets added.
+    if (document.querySelector('script[src="https://www.tiktok.com/embed.js"]')) return;
     const script = document.createElement("script");
     script.src = "https://www.tiktok.com/embed.js";
     script.async = true;
-    script.addEventListener("load", () => { window.tiktokEmbedLoaded = true; });
     document.body.appendChild(script);
-  }, [url]);
+  }, [dep]);
+}
+
+function TikTokEmbed({ url }) {
+  useTikTokEmbedScript(url);
   return (
     <blockquote className="tiktok-embed" cite={url} data-video-id="" style={{ maxWidth: 325,
       minWidth: 260, margin: "0 auto" }}>
       <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
     </blockquote>
+  );
+}
+
+// TikTok's official Creator Profile Embed
+// (https://developers.tiktok.com/doc/embed-creator-profiles) — the same
+// embed.js script renders this into a live card with avatar, follower/
+// following/likes counts, and up to 10 of the account's most recent
+// videos, auto-updating with no admin upkeep. This is what shows when no
+// individual video URLs have been pinned, mirroring how the Instagram
+// section falls back to a live profile embed.
+function TikTokProfileEmbed({ handle }) {
+  const cite = `https://www.tiktok.com/@${handle}`;
+  useTikTokEmbedScript(handle);
+  return (
+    <div style={{ maxWidth: 720, minWidth: 288, margin: "0 auto", width: "100%" }}>
+      <blockquote className="tiktok-embed" cite={cite} data-unique-id={handle}
+        data-embed-type="creator" data-embed-from="oembed"
+        style={{ maxWidth: 720, minWidth: 288, margin: "0 auto" }}>
+        <section>
+          <a target="_blank" rel="noopener noreferrer" href={`${cite}?refer=creator_embed`}>@{handle}</a>
+        </section>
+      </blockquote>
+    </div>
   );
 }
 
@@ -5695,17 +5721,11 @@ function TikTokSection({ data }) {
           ))}
         </div>
       ) : handle ? (
+        /* No individual video URLs pinned → the live creator profile
+           embed (avatar, stats, recent videos) so the section is never
+           just a placeholder, same as Instagram's fallback above. */
         <Reveal variant="rise" distance={18}>
-          <a href={`https://www.tiktok.com/@${handle}`} target="_blank" rel="noopener noreferrer"
-            className="lift" style={{ display: "block", maxWidth: 400, margin: "0 auto", padding: 28,
-              borderRadius: 16, textDecoration: "none", color: "var(--text)",
-              background: "var(--surface)", border: "1px solid var(--border)", textAlign: "center" }}>
-            <TikTokIcon size={30} color="var(--accent)" style={{ marginBottom: 10 }} />
-            <div style={{ fontWeight: 700, fontSize: 16 }}>@{handle}</div>
-            <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 6 }}>
-              Watch our latest videos on TikTok
-            </div>
-          </a>
+          <TikTokProfileEmbed handle={handle} />
         </Reveal>
       ) : null}
     </Band>
@@ -6810,10 +6830,11 @@ function Editor({ tab, data, setData }) {
     return (
       <Section title="TikTok">
         <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Paste the URL of any public TikTok video (copy the share link) — it renders as a real
-          embedded video, no login required. With no videos added, the section shows a
-          "Follow us on TikTok" card instead. The heading/intro text is edited on the Section
-          text tab.
+          Paste the URL of any public TikTok video (copy the share link) to pin specific videos —
+          each renders as a real embedded video, no login required. With no videos pinned, the
+          section instead shows TikTok's own live profile card for the handle below (avatar,
+          follower count, and up to 10 recent videos, updating on its own — nothing to maintain
+          here). The heading/intro text is edited on the Section text tab.
         </p>
         <Field label={'TikTok handle (for the "Follow us" link)'}>
           <input style={inp} value={tk.handle || ""} placeholder="msa.uw"
