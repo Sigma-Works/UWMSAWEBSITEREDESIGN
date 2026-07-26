@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl,
-  subscribe, listSubscribers } from "./supabase";
+  subscribe, listSubscribers, logAdminChange, listAdminLog } from "./supabase";
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
 // a visitor actually scrolls near the Quad section.
 const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
-const Globe3D = React.lazy(() => import("./Globe3D.jsx"));
 // Scroll-driven cherry-blossom canvas hero (270-frame sequence). Kept in its
 // own module so the frame-preload logic and canvas loop stay isolated.
 import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
@@ -1289,6 +1288,10 @@ const seed = {
   eventsExtra: {
     suggestUrl: "",
     suggestNote: "Have an idea for an event? We'd love to hear it.",
+    // When set to a PUBLISHED Notion calendar (a *.notion.site URL), the
+    // monthly view embeds it instead of the built-in calendar. Leave blank
+    // to use the built-in one.
+    notionUrl: "",
   },
   // Dated events power the monthly calendar. date is YYYY-MM-DD.
   calendar: [],
@@ -1547,9 +1550,9 @@ export default function App() {
       const saved = localStorage.getItem("msa-petals");
       if (saved !== null) return saved === "on";
     } catch {}
-    if (typeof window !== "undefined" &&
-        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return false;
-    return true;
+    // Off by default now — visitors can turn petals on in Settings (their
+    // choice then sticks). Also stays off for reduced-motion users.
+    return false;
   });
   useEffect(() => {
     try { localStorage.setItem("msa-petals", petals ? "on" : "off"); } catch {}
@@ -1700,6 +1703,7 @@ export default function App() {
           never actually light up. `route` always holds the current page
           path, so that's what Nav needs for aria-current/highlighting. */}
       <Nav active={route} onNav={scrollTo} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
+        prayerTimes={data.prayerTimes || seed.prayerTimes}
            onAdmin={() => setAdminOpen(true)} isAdmin={isAdmin}
            dark={dark} onToggleDark={() => setDark((d) => !d)}
            petals={petals} onTogglePetals={() => setPetals((p) => !p)}
@@ -2130,8 +2134,160 @@ function SettingsMenu({ dark, onToggleDark, petals, onTogglePetals }) {
   );
 }
 
+/* "Next prayer in HH:MM:SS" pill for the nav bar. Parses the manual prayer
+   times (Fajr…Isha), figures out the next one, and counts down — one timer,
+   updated once a second, cleared on unmount. Clicking it opens a popup with
+   the live Masjidal widget (or a link-out if no Masjid ID is set). Renders
+   nothing if there are no usable times. */
+const PRAYER_ORDER = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+
+function parsePrayerToMinutes(str) {
+  // "5:42 AM" -> minutes since midnight; returns null if unparseable
+  const m = String(str || "").trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10); const min = parseInt(m[2], 10);
+  const ap = (m[3] || "").toUpperCase();
+  if (ap === "PM" && h !== 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+function NextPrayerTimer({ times, compact = false }) {
+  const [now, setNow] = useState(() => new Date());
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Build today's prayer schedule in minutes; memoized on the times object.
+  const schedule = React.useMemo(() => {
+    if (!times) return [];
+    return PRAYER_ORDER
+      .map((name) => ({ name, mins: parsePrayerToMinutes(times[name]) }))
+      .filter((p) => p.mins != null);
+  }, [times]);
+
+  if (schedule.length === 0) return null;
+
+  const nowMins = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  let next = schedule.find((p) => p.mins > nowMins);
+  let crossesMidnight = false;
+  if (!next) { next = schedule[0]; crossesMidnight = true; } // wrap to tomorrow's Fajr
+
+  // seconds until next prayer
+  let diffMin = next.mins - nowMins;
+  if (crossesMidnight) diffMin += 24 * 60;
+  const totalSec = Math.max(0, Math.round(diffMin * 60));
+  const hh = Math.floor(totalSec / 3600);
+  const mm = Math.floor((totalSec % 3600) / 60);
+  const ss = totalSec % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  const countdown = hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)} title="Prayer times"
+        aria-label={`Next prayer ${next.name} in ${countdown}`}
+        style={{ display: "inline-flex", alignItems: "center", gap: 7,
+          padding: compact ? "7px 12px" : "8px 14px", borderRadius: 999,
+          border: "1px solid var(--border)", background: "var(--tint)",
+          cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+          color: "var(--text)", fontSize: compact ? 12.5 : 13, fontWeight: 600 }}>
+        <Clock size={compact ? 13 : 14} color="var(--accent)" />
+        <span style={{ color: "var(--text-muted)" }}>{next.name} in</span>
+        <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--accent)" }}>
+          {countdown}
+        </span>
+      </button>
+      {open && <MasjidalPopup times={times} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+/* Popup showing the live Masjidal prayer-times widget. */
+function MasjidalPopup({ times, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
+  }, [onClose]);
+
+  const embed = (times?.masjidalEmbed || "").trim();
+  // We only embed a Masjidal iframe when the admin has pasted the exact embed
+  // code from their masjidal.com account (Settings → Web Integration). We
+  // don't synthesize a widget URL from just the Masjid ID, because Masjidal's
+  // embed URL format isn't a stable public contract. With no embed pasted, we
+  // show the manual times (which always render) plus a link to masjidal.com.
+  const cleanEmbed = embed ? sanitizeIframe(embed) : "";
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,14,.62)",
+        backdropFilter: "blur(4px)", display: "grid", placeItems: "center", padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
+        maxHeight: "88vh", overflow: "hidden", position: "relative", padding: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
+            <Clock size={17} color="var(--accent)" /> Prayer Times
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ ...iconBtn, width: 34, height: 34 }}>
+            <X size={17} color="var(--accent)" />
+          </button>
+        </div>
+        <div style={{ padding: cleanEmbed ? 0 : 18 }}>
+          {cleanEmbed ? (
+            <div style={{ width: "100%" }} dangerouslySetInnerHTML={{ __html: cleanEmbed }} />
+          ) : (
+            /* Manual times (always render) + link to the live Masjidal page. */
+            <div style={{ display: "grid", gap: 8 }}>
+              {PRAYER_ORDER.filter((n) => times?.[n]).map((n) => (
+                <div key={n} style={{ display: "flex", justifyContent: "space-between",
+                  padding: "10px 14px", borderRadius: 10, background: "var(--tint)" }}>
+                  <span style={{ fontWeight: 600 }}>{n}</span>
+                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>{times[n]}</span>
+                </div>
+              ))}
+              {times?.jummah && (
+                <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "6px 4px", lineHeight: 1.5 }}>
+                  {times.jummah}
+                </div>
+              )}
+              <a className="btn" href="https://mymasjidal.com/" target="_blank" rel="noopener noreferrer"
+                style={{ ...btnPurple, textDecoration: "none", display: "inline-flex",
+                  alignItems: "center", justifyContent: "center", gap: 8, marginTop: 4 }}>
+                <ExternalLink size={15} /> Live times on Masjidal
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Minimal allowlist sanitizer for an admin-pasted <iframe> embed: strips
+   everything except a single iframe with safe attributes, so a stored embed
+   string can't inject scripts. Admin content is trusted-ish, but this keeps
+   a compromised/mistaken value from running arbitrary HTML. */
+function sanitizeIframe(html) {
+  const m = String(html).match(/<iframe\b[^>]*>(?:<\/iframe>)?/i);
+  if (!m) return "";
+  const tag = m[0];
+  const srcM = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
+  if (!srcM) return "";
+  const src = srcM[1];
+  // only allow https iframes from masjidal
+  if (!/^https:\/\/([\w-]+\.)?masjidal\.com\//i.test(src)) return "";
+  return `<iframe src="${src}" style="width:100%;height:520px;border:none;display:block" loading="lazy" title="Masjidal prayer times"></iframe>`;
+}
+
 function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark,
-  petals, onTogglePetals, onSearch }) {
+  petals, onTogglePetals, onSearch, prayerTimes }) {
   const { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff } = useMotionPrefs();
   const [solid, setSolid] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -2251,6 +2407,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             );
           })}
 
+          <NextPrayerTimer times={prayerTimes} />
           <button className="btn" onClick={onSearch} aria-label="Search the site"
             title="Search (⌘K)" style={iconBtn}>
             <Search size={16} color="var(--accent)" />
@@ -2988,12 +3145,25 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
                 so purple/gold trade places around the mark as you scroll.
                 Skipped entirely when the "Rosary glow" display setting is
                 off (Nav's settings menu / MotionPrefsContext). */}
+            {/* glow layer — a soft CIRCULAR radial glow emanating from the
+                logo. Uses a radial-gradient that fades to transparent at the
+                edge, so it reads as a round halo (no square corners the old
+                blurred conic-gradient produced). The color shifts between
+                neon purple/gold with scroll via --fx-mix. Skipped entirely
+                when the "Rosary glow" display setting is off. */}
             {!glowOff && (
-              <div aria-hidden="true" style={{
-                position: "absolute", inset: "-30%", borderRadius: "50%",
-                background: `conic-gradient(from var(--fx-angle, 0deg), ${NEON_PURPLE}, ${NEON_GOLD}, ${NEON_PURPLE})`,
-                filter: "blur(34px)", opacity: 0.6, mixBlendMode: "screen",
-              }} />
+              <>
+                <div aria-hidden="true" style={{
+                  position: "absolute", inset: "-28%", borderRadius: "50%",
+                  background: `radial-gradient(circle at center, color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)) 0%, transparent 62%)`,
+                  filter: "blur(30px)", opacity: 0.7, mixBlendMode: "screen",
+                }} />
+                <div aria-hidden="true" style={{
+                  position: "absolute", inset: "-8%", borderRadius: "50%",
+                  background: `radial-gradient(circle at center, color-mix(in srgb, ${NEON_GOLD} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_PURPLE} calc(var(--fx-mix, .5) * 100%)) 0%, transparent 58%)`,
+                  filter: "blur(18px)", opacity: 0.5, mixBlendMode: "screen",
+                }} />
+              </>
             )}
             <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
               decoding="async"
@@ -3103,6 +3273,36 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             )}
           </div>
         </div>
+
+        {/* Home quick-actions: a prominent Donate call-to-action plus a fast
+            jump to prayer times. Sits right under the announcements, above
+            the scroll cue. */}
+        <div style={{ position: "relative", zIndex: 2, maxWidth: 720, margin: "8px auto 0",
+          display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center" }}>
+          <button onClick={() => onNav("/about#donate")} className="lift"
+            style={{ display: "inline-flex", alignItems: "center", gap: 9,
+              padding: "14px 26px", borderRadius: 14, border: "none", cursor: "pointer",
+              fontFamily: "inherit", fontSize: 15.5, fontWeight: 800, color: "#2c2418",
+              background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)`,
+              boxShadow: "0 10px 30px rgba(201,182,136,.4)" }}>
+            <Heart size={17} /> Donate to MSA UW
+          </button>
+          <button onClick={() => onNav("/prayer")} className="lift"
+            style={{ display: "inline-flex", alignItems: "center", gap: 9,
+              padding: "14px 24px", borderRadius: 14, cursor: "pointer", fontFamily: "inherit",
+              fontSize: 15, fontWeight: 700, color: "#fff",
+              background: "rgba(255,255,255,.10)", border: "1px solid rgba(255,255,255,.28)" }}>
+            <Clock size={16} /> Prayer times
+          </button>
+        </div>
+        {/* Small hint: where to change site settings. */}
+        <div style={{ position: "relative", zIndex: 2, textAlign: "center", marginTop: 14,
+          fontSize: 12.5, color: "rgba(255,255,255,.55)", lineHeight: 1.5, padding: "0 20px" }}>
+          Petals, animations, and light/dark mode can be changed in{" "}
+          <span style={{ color: "rgba(255,255,255,.8)", fontWeight: 600 }}>Settings</span>{" "}
+          (the ⚙ icon in the top bar).
+        </div>
+
         <ScrollCue onClick={() => onNav("moments")} />
         {/* girih band along the base of the hero — marginTop gives it
             extra clearance so it doesn't visually collide with the arch's
@@ -4220,6 +4420,45 @@ function MonthCalendar({ events, weeklyEvents }) {
   );
 }
 
+/* Embeds a published Notion calendar in an iframe. Notion only allows
+   embedding pages that have been shared with "Publish to web" (a
+   *.notion.site URL). A private app.notion.com link won't render, so if an
+   admin pastes one we normalise what we can and, if it can't be embedded,
+   show a graceful "open the calendar" link-out instead of a blank frame. */
+function NotionCalendarEmbed({ url }) {
+  const [failed, setFailed] = useState(false);
+  const clean = String(url || "").trim();
+  // A publishable embed URL is a notion.site link. app.notion.com/notion.so
+  // links are private workspace URLs and can't be iframed.
+  const embeddable = /notion\.site/i.test(clean);
+
+  if (!embeddable || failed) {
+    return (
+      <div style={{ ...card, padding: 28, textAlign: "center" }}>
+        <CalendarDays size={26} color="var(--accent)" style={{ marginBottom: 10 }} />
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>MSA UW Calendar</div>
+        <p style={{ fontSize: 13.5, color: "var(--text-muted)", lineHeight: 1.6, maxWidth: 440,
+          margin: "0 auto 16px" }}>
+          Open the full calendar in Notion for the latest events.
+        </p>
+        <a className="btn" href={safeHref(clean)} target="_blank" rel="noopener noreferrer"
+          style={{ ...btnPurple, textDecoration: "none", display: "inline-flex",
+            alignItems: "center", gap: 8 }}>
+          <ExternalLink size={15} /> Open the calendar
+        </a>
+      </div>
+    );
+  }
+  return (
+    <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <iframe title="MSA UW Calendar" src={clean} loading="lazy"
+        onError={() => setFailed(true)}
+        style={{ width: "100%", height: 640, border: "none", display: "block",
+          background: "var(--surface)" }} />
+    </div>
+  );
+}
+
 /* ---------- EVENTS ---------- */
 function EventsSection({ data }) {
   return (
@@ -4272,7 +4511,9 @@ function EventsViews({ data }) {
 
       {view === "week"
         ? <WeeklyEvents data={data} />
-        : <Reveal variant="rise" distance={24}><MonthCalendar events={data.calendar || []} weeklyEvents={data.events || {}} /></Reveal>}
+        : extra.notionUrl
+          ? <Reveal variant="rise" distance={24}><NotionCalendarEmbed url={extra.notionUrl} /></Reveal>
+          : <Reveal variant="rise" distance={24}><MonthCalendar events={data.calendar || []} weeklyEvents={data.events || {}} /></Reveal>}
 
       <Reveal delay={160} variant="rise" distance={24}>
         <div style={{ marginTop: 26, ...card, padding: "24px 26px", display: "flex",
@@ -4818,21 +5059,21 @@ function QuadSection({ data }) {
 }
 
 /* ---------- ABOUT ---------- */
-/* Lazily mounts the Three.js globe next to the About section's title once
-   it's near the viewport (same code-split + useInView pattern as
-   LazyQuadTree above), and only above a width where there's actually room
-   for it — on phones/small tablets it doesn't render at all, so mobile
-   visitors never pay for the three.js chunk, the GeoJSON fetch, or a WebGL
-   context they can't usefully see. Once mounted, Globe3D itself pauses its
-   own render loop whenever it scrolls out of view or the tab is
-   backgrounded (see Globe3D.jsx), so it's cheap to leave mounted after
-   that first reveal. */
-function AboutGlobe() {
+/* Looping cherry-blossom video in the About section — replaces the old 3D
+   globe (which pulled in three.js + a ~500KB chunk). Circular framed to keep
+   the same silhouette + neon halo as before. The <video> only mounts once it
+   scrolls near the viewport, is muted/inline/looping so it autoplays on all
+   browsers, pauses itself when scrolled away or the tab is hidden (no wasted
+   decode), and falls back to a static poster under reduced-motion. */
+function AboutVideo() {
   const reduced = useReducedMotion();
   const dark = useTheme();
-  const [ref, near] = useInView({ threshold: 0, rootMargin: "400px 0px" });
+  const [ref, near] = useInView({ threshold: 0, rootMargin: "300px 0px" });
   const [wide, setWide] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth >= 900 : false);
+  const vidRef = useRef(null);
+  const inViewRef = useRef(false);
+
   useEffect(() => {
     const calc = () => setWide(window.innerWidth >= 900);
     calc();
@@ -4840,33 +5081,28 @@ function AboutGlobe() {
     return () => window.removeEventListener("resize", calc);
   }, []);
 
-  // Dark surfaces get a neon-WHITE globe (pops against the dark bg, with
-  // a purple secondary glow for brand color). Light surfaces flip to a
-  // neon-PURPLE globe instead — white dots/outline all but disappear on
-  // the light theme's pale background, which is what prompted this in
-  // the first place. The purple+gold glow pairing on the light side
-  // reuses the same "neon" duo the rosary medallion glow uses elsewhere.
-  // The Seattle marker swaps to whichever of the two isn't the globe's
-  // own color, so it keeps standing out against the sphere either way.
-  const globeColor = dark ? NEON_WHITE : NEON_PURPLE;
-  const markerColor = dark ? NEON_PURPLE : GOLD_D;
+  // Pause the video whenever it's off-screen or the tab is backgrounded, and
+  // resume when it comes back — so a looping clip never burns CPU/battery
+  // decoding frames nobody is looking at.
+  useEffect(() => {
+    if (reduced || !wide) return;
+    const v = vidRef.current;
+    if (!v) return;
+    const sync = () => {
+      const play = inViewRef.current && !document.hidden;
+      if (play) v.play?.().catch(() => {}); else v.pause?.();
+    };
+    const io = new IntersectionObserver(([e]) => { inViewRef.current = e.isIntersecting; sync(); },
+      { rootMargin: "0px" });
+    io.observe(v);
+    document.addEventListener("visibilitychange", sync);
+    return () => { io.disconnect(); document.removeEventListener("visibilitychange", sync); };
+  }, [reduced, wide, near]);
+
   const glowA = dark ? NEON_WHITE : NEON_PURPLE;
   const glowB = dark ? NEON_PURPLE : NEON_GOLD;
-  const graticuleRgba = dark ? "rgba(255,255,255,0.3)" : "rgba(184,75,255,0.32)";
-
-  // Object props are memoized so an unrelated re-render of AboutSection
-  // (e.g. admin content edits elsewhere on the page) doesn't hand Globe3D
-  // brand-new object identities on every render — its effect tears down
-  // and rebuilds the whole WebGL scene whenever these change, so keeping
-  // their identity stable (and only changing when the theme actually
-  // flips) matters for not janking the page.
-  const dots = React.useMemo(() => ({ color: globeColor, size: 4, density: 6, allDots: false }),
-    [globeColor]);
-  const markerConfig = React.useMemo(() => ({
-    markers: [{ lat: 47.6062, lng: -122.3321 }], // Seattle, WA
-    color: markerColor,
-    size: 60,
-  }), [markerColor]);
+  const base = import.meta.env.BASE_URL || "/";
+  const poster = `${base}video/about-poster.webp`;
 
   if (!wide) return null;
 
@@ -4874,35 +5110,26 @@ function AboutGlobe() {
     <div ref={ref} aria-hidden="true" style={{
       position: "relative", width: "clamp(260px, 28vw, 380px)", height: "clamp(260px, 28vw, 380px)",
       flexShrink: 0, margin: "0 auto" }}>
-      {/* Layered neon halo behind the sphere — same "glow ring" language
-          as the rosary medallion's neon effect elsewhere on the site,
-          just softer since this sits behind real 3D content rather than
-          being the whole effect. Colors follow the theme, see above. */}
-      <div aria-hidden="true" style={{ position: "absolute", inset: "4%", borderRadius: "50%",
-        filter: "blur(30px)", background: `radial-gradient(circle, ${glowA}26 0%, transparent 68%)` }} />
-      <div aria-hidden="true" style={{ position: "absolute", inset: "10%", borderRadius: "50%",
-        filter: "blur(22px)", background: `radial-gradient(circle, ${glowB}30 0%, transparent 72%)` }} />
-      {near && (
-        <React.Suspense fallback={null}>
-          <Globe3D
-            speed={reduced ? 0 : 1.3}
-            direction="right"
-            scale={8}
-            detail={5}
-            dragSpeed={4}
-            stopOnHover
-            fill="dots"
-            dots={dots}
-            oceanColor="rgba(91,61,140,0.1)"
-            outlineColor={globeColor}
-            outlineWidth={1.3}
-            graticuleColor={graticuleRgba}
-            showGrid
-            showOutline
-            markerConfig={markerConfig}
-          />
-        </React.Suspense>
-      )}
+      {/* neon halo behind the circle — same language as the rosary glow */}
+      <div aria-hidden="true" style={{ position: "absolute", inset: "2%", borderRadius: "50%",
+        filter: "blur(34px)", background: `radial-gradient(circle, ${glowA}30 0%, transparent 68%)` }} />
+      <div aria-hidden="true" style={{ position: "absolute", inset: "8%", borderRadius: "50%",
+        filter: "blur(24px)", background: `radial-gradient(circle, ${glowB}34 0%, transparent 72%)` }} />
+      {/* circular media frame */}
+      <div style={{ position: "absolute", inset: 0, borderRadius: "50%", overflow: "hidden",
+        border: `1.5px solid ${dark ? "rgba(255,255,255,.22)" : "rgba(75,46,131,.28)"}`,
+        boxShadow: dark ? "0 20px 60px rgba(0,0,0,.45)" : "0 20px 50px rgba(75,46,131,.25)" }}>
+        {reduced ? (
+          <img src={poster} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : near ? (
+          <video ref={vidRef} muted loop playsInline autoPlay preload="none" poster={poster}
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}>
+            <source src={`${base}video/about-loop.mp4`} type="video/mp4" />
+          </video>
+        ) : (
+          <img src={poster} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        )}
+      </div>
     </div>
   );
 }
@@ -4924,7 +5151,7 @@ function AboutSection({ data }) {
           )}
         </div>
         <Reveal delay={280} variant="up" distance={18}>
-          <AboutGlobe />
+          <AboutVideo />
         </Reveal>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
@@ -6205,6 +6432,10 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState("hero");
   const [savedMsg, setSavedMsg] = useState("");
+  // Snapshot of content as it was when the panel opened / last saved, so we
+  // can log which sections an admin actually changed.
+  const baselineRef = useRef(null);
+  if (baselineRef.current === null && data) baselineRef.current = data;
 
   const login = async () => {
     setErr(""); setBusy(true);
@@ -6219,11 +6450,32 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
     setIsAdmin(false); setEmail(""); setPw("");
   };
 
+  // Which top-level content sections changed since the last snapshot.
+  const changedSections = (before, after) => {
+    if (!before || !after) return [];
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    const changed = [];
+    for (const k of keys) {
+      if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) changed.push(k);
+    }
+    return changed;
+  };
+
   const save = async () => {
     setSavedMsg("");
     const res = await persist(data);
-    if (res.ok) { setSavedMsg("Saved — changes are now live."); setTimeout(() => setSavedMsg(""), 3000); }
-    else setSavedMsg("Save failed: " + res.error);
+    if (res.ok) {
+      setSavedMsg("Saved — changes are now live.");
+      setTimeout(() => setSavedMsg(""), 3000);
+      // Best-effort audit log: record who saved and what changed. Never
+      // blocks or fails the save (which already succeeded).
+      const changed = changedSections(baselineRef.current, data);
+      const summary = changed.length
+        ? `Edited: ${changed.join(", ")}`
+        : "Saved (no field-level changes detected)";
+      logAdminChange(summary);
+      baselineRef.current = data;   // reset baseline after a successful save
+    } else setSavedMsg("Save failed: " + res.error);
   };
 
   return (
@@ -6280,6 +6532,7 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
                 { group: "Prayer", items: [["times", "Prayer times"], ["spaces", "Prayer spaces"], ["house", "Islamic House"]] },
                 { group: "Events", items: [["events", "Weekly events"], ["calendar", "Calendar"], ["stats", "Stats / metrics"], ["programs", "Programs"]] },
                 { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["tiktok", "TikTok"], ["mailing", "Mailing list"]] },
+                { group: "Admin", items: [["history", "Change history"]] },
               ].map(({ group, items }) => (
                 <div key={group} style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1px",
@@ -6321,6 +6574,61 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
         )}
       </div>
     </div>
+  );
+}
+
+/* Change history — shows the admin_log audit trail (who saved what, when).
+   Reads on mount; authenticated-only via RLS. */
+function AdminHistory() {
+  const [state, setState] = useState({ loading: true, rows: [], error: "" });
+  useEffect(() => {
+    let alive = true;
+    listAdminLog(100).then((res) => {
+      if (!alive) return;
+      if (res.ok) setState({ loading: false, rows: res.rows, error: "" });
+      else setState({ loading: false, rows: [], error: res.error });
+    });
+    return () => { alive = false; };
+  }, []);
+
+  const fmt = (iso) => {
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  };
+
+  return (
+    <Section title="Change history">
+      <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
+        Every time an admin saves, we record who saved and which sections changed.
+        Most recent first.
+      </p>
+      {state.loading ? (
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading…</div>
+      ) : state.error ? (
+        <div style={{ padding: 14, borderRadius: 10, background: "var(--tint)",
+          fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          Couldn't load the log{state.error ? `: ${state.error}` : ""}. If this is the first
+          time, make sure the <b>admin_log</b> table exists in Supabase (setup SQL is in
+          the code comments).
+        </div>
+      ) : state.rows.length === 0 ? (
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No changes recorded yet.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {state.rows.map((r, i) => (
+            <div key={i} style={{ display: "grid", gap: 3, padding: "11px 14px", borderRadius: 10,
+              background: "var(--tint)", border: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10,
+                flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>
+                  {r.actor_email || "unknown"}</span>
+                <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{fmt(r.created_at)}</span>
+              </div>
+              <div style={{ fontSize: 13.5, color: "var(--text-muted)" }}>{r.summary}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -7082,6 +7390,10 @@ function Editor({ tab, data, setData }) {
     );
   }
 
+  if (tab === "history") {
+    return <AdminHistory />;
+  }
+
   if (tab === "contact") {
     const c = data.contact || seed.contact;
     const setC = (patch) => up({ contact: { ...c, ...patch } });
@@ -7106,8 +7418,16 @@ function Editor({ tab, data, setData }) {
           <input style={inp} value={extra.suggestNote || ""}
             onChange={(e) => setE({ suggestNote: e.target.value })} />
         </Field>
+        <div style={{ height: 1, background: "var(--border)", margin: "18px 0" }} />
+        <Field label="Notion calendar embed URL (published *.notion.site link)">
+          <input style={inp} placeholder="https://your-page.notion.site/…" value={extra.notionUrl || ""}
+            onChange={(e) => setE({ notionUrl: e.target.value })} />
+        </Field>
         <p style={{ fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          With no form URL set, the suggestion button opens an email to the address above instead.
+          In Notion open the calendar → Share → <b>Publish</b> → copy the published link
+          (it ends in <b>.notion.site</b>). Paste it here and the monthly view shows your
+          Notion calendar. Leave blank to use the built-in calendar. A private
+          app.notion.com link can't be embedded.
         </p>
       </Section>
     );
