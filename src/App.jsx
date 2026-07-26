@@ -3828,6 +3828,22 @@ function monthMatrix(year, month) {
   return cells;
 }
 
+// Turns a free-text time like "7:00 PM" or "1:15pm" into minutes-since-
+// midnight so the day view can sort events chronologically (Google
+// Calendar-style). Unparseable/missing times sort last rather than
+// throwing the whole list into a random order.
+function timeToMinutes(t) {
+  if (!t) return 9999;
+  const m = String(t).trim().match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])?/);
+  if (!m) return 9999;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = (m[3] || "").toLowerCase();
+  if (ap === "pm" && h !== 12) h += 12;
+  if (ap === "am" && h === 12) h = 0;
+  return h * 60 + min;
+}
+
 function MonthCalendar({ events, weeklyEvents }) {
   const today = new Date();
   const [cursor, setCursor] = useState({ y: today.getFullYear(), m: today.getMonth() });
@@ -3966,7 +3982,12 @@ function MonthCalendar({ events, weeklyEvents }) {
   const isToday = (d) =>
     d && today.getFullYear() === cursor.y && today.getMonth() === cursor.m && today.getDate() === d;
 
-  const pickedEvents = picked ? (byDate[picked] || []) : [];
+  // Chronological, Google-Calendar-day-view style, not insertion order.
+  const pickedEvents = React.useMemo(() => {
+    const list = picked ? (byDate[picked] || []) : [];
+    return [...list].sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+  }, [picked, byDate]);
+  const pickedDayNum = picked ? Number(picked.split("-")[2]) : null;
 
   return (
     <div style={{ ...card, padding: 0, overflow: "hidden" }}>
@@ -4059,47 +4080,62 @@ function MonthCalendar({ events, weeklyEvents }) {
           })}
         </div>
 
-        {/* Selected day detail — animates open without measuring height */}
+        {/* Selected day detail — Google-Calendar-day-view style: a
+            circular day-number badge up top, then a plain chronological
+            list of colored-dot + time + name rows instead of the old
+            boxed cards, per the reference screenshot. Still animates open
+            without measuring height. */}
         <div style={{ display: "grid",
           gridTemplateRows: pickedEvents.length ? "1fr" : "0fr",
           opacity: pickedEvents.length ? 1 : 0,
-          marginTop: pickedEvents.length ? 12 : 0,
+          marginTop: pickedEvents.length ? 14 : 0,
           transition: reduced ? "none"
             : `grid-template-rows ${DUR.base}ms ${EASE.out}, opacity ${DUR.base}ms ${EASE.out}, margin-top ${DUR.base}ms ${EASE.out}` }}>
           <div style={{ overflow: "hidden" }}>
-            <div style={{ display: "grid", gap: 8 }}>
-              {pickedEvents.map((e) => (
-                <div key={e.id} style={{ borderRadius: 10, padding: "12px 14px",
-                  background: "var(--tint)", border: "1px solid var(--border)" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5, color: "var(--text)" }}>
-                      {e.name}</div>
-                    {e.recurring && (
-                      <span title="Repeats every week — from the Weekly events tab"
-                        style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".5px",
-                          textTransform: "uppercase", color: "var(--accent)",
-                          border: "1px solid var(--border-strong)", borderRadius: 999,
-                          padding: "1px 7px" }}>Weekly</span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
-                    {e.time && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4,
-                        fontSize: 12.5, color: "var(--accent)", fontWeight: 600 }}>
-                        <Clock size={12} /> {e.time}</span>
-                    )}
-                    {e.loc && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4,
-                        fontSize: 12.5, color: "var(--text-faint)" }}>
-                        <MapPin size={12} /> {e.loc}</span>
-                    )}
-                  </div>
-                  {e.desc && (
-                    <div style={{ marginTop: 6, fontSize: 12.5, color: "var(--text-muted)",
-                      lineHeight: 1.55 }}>{e.desc}</div>
-                  )}
+            <div style={{ borderRadius: 12, border: "1px solid var(--border)",
+              background: "var(--surface)", padding: "16px 16px 10px" }}>
+              {pickedDayNum != null && (
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                  <span style={{ display: "grid", placeItems: "center", width: 30, height: 30,
+                    borderRadius: "50%", background: PURPLE, color: "#fff",
+                    fontSize: 13.5, fontWeight: 700 }}>
+                    {pickedDayNum}
+                  </span>
                 </div>
-              ))}
+              )}
+              <div style={{ display: "grid", gap: 10 }}>
+                {pickedEvents.map((e) => (
+                  <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                    <span aria-hidden="true" style={{ flexShrink: 0, width: 8, height: 8,
+                      borderRadius: "50%", background: e.recurring ? GOLD : "var(--accent)" }} />
+                    <div style={{ minWidth: 0, display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      {e.time && (
+                        <span style={{ fontSize: 13.5, color: "var(--text-muted)",
+                          whiteSpace: "nowrap" }}>{e.time}</span>
+                      )}
+                      <span style={{ fontSize: 14.5, fontWeight: 700, color: "var(--text)" }}>
+                        {e.name}</span>
+                      {e.recurring && (
+                        <span title="Repeats every week — from the Weekly events tab"
+                          style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".5px",
+                            textTransform: "uppercase", color: "var(--accent)",
+                            border: "1px solid var(--border-strong)", borderRadius: 999,
+                            padding: "1px 6px" }}>Weekly</span>
+                      )}
+                      {e.loc && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3,
+                          fontSize: 12, color: "var(--text-faint)" }}>
+                          <MapPin size={11} /> {e.loc}</span>
+                      )}
+                      {e.desc && (
+                        <div style={{ flexBasis: "100%", fontSize: 12.5, color: "var(--text-muted)",
+                          lineHeight: 1.5 }}>{e.desc}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ height: 6 }} />
             </div>
           </div>
         </div>
