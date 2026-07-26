@@ -51,7 +51,10 @@ const posterUrl = () => `${BASE}hero/poster.webp`;
    set. Data-saver / very slow links also fall back to the small set. */
 function pickSize() {
   if (typeof window === "undefined") return "lg";
-  const narrow = window.innerWidth < 820;
+  // Only genuine phones (and data-saver / very slow links) get the lighter
+  // 960px set — everything tablet-sized and up gets the full 1280px frames,
+  // so a mid-width browser window never ends up upscaling the small set.
+  const narrow = window.innerWidth < 600;
   const c = navigator.connection;
   const slow = c && (c.saveData || /(^|-)2g$/.test(c.effectiveType || ""));
   return narrow || slow ? "sm" : "lg";
