@@ -4041,44 +4041,91 @@ function MonthCalendar({ events, weeklyEvents }) {
               padding: "4px 0" }}>{d}</div>
           ))}
         </div>
+        {/* Day cells are dot-only on narrow phones (not enough width for
+            readable text across 7 columns) and switch to inline "time
+            name" rows — like Google Calendar's month view, per the
+            reference screenshot — once there's room, via the
+            .cal-lines/.cal-dots media query in the <style> block below.
+            Both are always rendered; CSS just picks which one shows. */}
         <div ref={gridRef} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
           {cells.map((d, i) => {
             if (!d) return <div key={i} />;
             const k = key(d);
-            const evs = byDate[k] || [];
+            const evs = (byDate[k] || []).slice().sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
             const has = evs.length > 0;
             const sel = picked === k;
+            const today = isToday(d);
+            const MAX_LINES = 3;
             return (
-              <button key={i} onClick={() => has && setPicked(sel ? null : k)}
+              <button key={i} className="cal-cell" onClick={() => has && setPicked(sel ? null : k)}
                 aria-label={has ? `${d}: ${evs.length} event${evs.length > 1 ? "s" : ""}` : String(d)}
                 disabled={!has}
                 style={{
-                  aspectRatio: "1 / 1", minHeight: 38, borderRadius: 10, padding: 0,
-                  cursor: has ? "pointer" : "default", fontFamily: "inherit",
-                  border: sel ? `2px solid ${GOLD}`
-                    : isToday(d) ? "2px solid var(--accent)" : "1px solid var(--border)",
+                  borderRadius: 10, cursor: has ? "pointer" : "default", fontFamily: "inherit",
+                  border: sel ? `2px solid ${GOLD}` : today ? "2px solid var(--accent)" : "1px solid var(--border)",
                   background: has ? "var(--tint-2)" : "transparent",
-                  color: has ? "var(--accent)" : "var(--text-faint)",
-                  fontWeight: has || isToday(d) ? 700 : 500, fontSize: 13.5,
-                  display: "grid", placeItems: "center", position: "relative",
+                  position: "relative", textAlign: "left",
                   transition: reduced ? "none"
                     : `background ${DUR.fast}ms ${EASE.out}, border-color ${DUR.fast}ms ${EASE.out}, transform ${DUR.fast}ms ${EASE.out}`,
                   transform: sel ? "translate3d(0,-2px,0)" : "none",
                 }}>
-                {d}
+                <span className="cal-daynum" style={{
+                  fontWeight: has || today ? 700 : 500, fontSize: 13.5,
+                  color: has ? "var(--accent)" : "var(--text-faint)" }}>
+                  {today
+                    ? <span style={{ display: "inline-grid", placeItems: "center", width: 20, height: 20,
+                        borderRadius: "50%", background: PURPLE, color: "#fff", fontSize: 11.5 }}>{d}</span>
+                    : d}
+                </span>
+
+                {/* mobile: small dot cluster, same as before */}
                 {has && (
-                  <span aria-hidden="true" style={{ position: "absolute", bottom: 5,
-                    display: "flex", gap: 2 }}>
+                  <span aria-hidden="true" className="cal-dots" style={{ position: "absolute", bottom: 5,
+                    left: 0, right: 0, justifyContent: "center", gap: 2 }}>
                     {evs.slice(0, 3).map((_, n) => (
-                      <span key={n} style={{ width: 4, height: 4, borderRadius: 99,
-                        background: GOLD }} />
+                      <span key={n} style={{ width: 4, height: 4, borderRadius: 99, background: GOLD }} />
                     ))}
+                  </span>
+                )}
+
+                {/* tablet/desktop: actual event rows inline in the box */}
+                {has && (
+                  <span className="cal-lines" style={{ flexDirection: "column", gap: 2, marginTop: 2, minWidth: 0 }}>
+                    {evs.slice(0, MAX_LINES).map((e) => (
+                      <span key={e.id} style={{ display: "flex", alignItems: "center", gap: 3,
+                        fontSize: 10.5, lineHeight: 1.3, minWidth: 0 }}>
+                        <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: "50%",
+                          flexShrink: 0, background: e.recurring ? GOLD : "var(--accent)" }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          color: "var(--text)", fontWeight: 600 }}>
+                          {e.time && <span style={{ color: "var(--text-faint)", fontWeight: 500 }}>{e.time} </span>}
+                          {e.name}
+                        </span>
+                      </span>
+                    ))}
+                    {evs.length > MAX_LINES && (
+                      <span style={{ fontSize: 10, color: "var(--text-faint)", paddingLeft: 8 }}>
+                        +{evs.length - MAX_LINES} more
+                      </span>
+                    )}
                   </span>
                 )}
               </button>
             );
           })}
         </div>
+        <style>{`
+          .cal-cell { min-height: 38px; padding: 0; display: grid; place-items: center; }
+          .cal-cell .cal-dots { display: flex; }
+          .cal-cell .cal-lines { display: none; }
+          @media (min-width: 640px) {
+            .cal-cell { min-height: 92px; padding: 6px 6px 5px; display: flex;
+              flex-direction: column; align-items: stretch; justify-content: flex-start; }
+            .cal-cell .cal-daynum { align-self: flex-start; }
+            .cal-cell .cal-dots { display: none; }
+            .cal-cell .cal-lines { display: flex; }
+          }
+        `}</style>
 
         {/* Selected day detail — Google-Calendar-day-view style: a
             circular day-number badge up top, then a plain chronological
