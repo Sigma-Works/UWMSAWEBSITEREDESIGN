@@ -38,7 +38,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 // 2. Update FRAME_COUNT below to match the new total.
 // Everything else (preload pool, scroll-to-frame mapping, resolution
 // picking) automatically adapts to whatever count is set here.
-const FRAME_COUNT = 270;
+const FRAME_COUNT = 120;
 const BASE = import.meta.env.BASE_URL || "/";
 
 // zero-padded 000..269 to match the encoded files
