@@ -48,6 +48,7 @@ const GRAD_DEEP = `linear-gradient(135deg, ${INK} 0%, ${PURPLE_D} 55%, ${PURPLE}
 // the site's usual restrained palette.
 const NEON_PURPLE = "#B84BFF";
 const NEON_GOLD = "#FFD23F";
+const NEON_WHITE = "#F5F6FF";   // bright, faintly cool white — for the About globe's neon accent
 
 const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-hoodie";
 
@@ -4824,21 +4825,30 @@ function AboutGlobe() {
   // brand-new object identities on every render — its effect tears down
   // and rebuilds the whole WebGL scene whenever these change, so keeping
   // their identity stable matters for not janking the page.
-  const dots = React.useMemo(() => ({ color: GOLD, size: 3.5, density: 6, allDots: false }), []);
+  // Neon-white landmass dots/outline (rather than the muted gold used
+  // elsewhere) so the globe reads as its own bright, glowing accent next
+  // to the title instead of blending into the section's gold trim.
+  const dots = React.useMemo(() => ({ color: NEON_WHITE, size: 4, density: 6, allDots: false }), []);
   const markerConfig = React.useMemo(() => ({
     markers: [{ lat: 47.6062, lng: -122.3321 }], // Seattle, WA
     color: NEON_PURPLE,
-    size: 55,
+    size: 60,
   }), []);
 
   if (!wide) return null;
 
   return (
     <div ref={ref} aria-hidden="true" style={{
-      position: "relative", width: "clamp(200px, 22vw, 300px)", height: "clamp(200px, 22vw, 300px)",
+      position: "relative", width: "clamp(260px, 28vw, 380px)", height: "clamp(260px, 28vw, 380px)",
       flexShrink: 0, margin: "0 auto" }}>
-      <div aria-hidden="true" style={{ position: "absolute", inset: "8%", borderRadius: "50%",
-        filter: "blur(28px)", background: `radial-gradient(circle, ${PURPLE}33 0%, transparent 70%)` }} />
+      {/* Layered neon-white + purple halo behind the sphere — same "glow
+          ring" language as the rosary medallion's neon effect elsewhere
+          on the site, just softer since this sits behind real 3D content
+          rather than being the whole effect. */}
+      <div aria-hidden="true" style={{ position: "absolute", inset: "4%", borderRadius: "50%",
+        filter: "blur(30px)", background: `radial-gradient(circle, ${NEON_WHITE}26 0%, transparent 68%)` }} />
+      <div aria-hidden="true" style={{ position: "absolute", inset: "10%", borderRadius: "50%",
+        filter: "blur(22px)", background: `radial-gradient(circle, ${NEON_PURPLE}30 0%, transparent 72%)` }} />
       {near && (
         <React.Suspense fallback={null}>
           <Globe3D
@@ -4851,9 +4861,9 @@ function AboutGlobe() {
             fill="dots"
             dots={dots}
             oceanColor="rgba(91,61,140,0.1)"
-            outlineColor={GOLD}
-            outlineWidth={1}
-            graticuleColor="rgba(201,182,136,0.28)"
+            outlineColor={NEON_WHITE}
+            outlineWidth={1.3}
+            graticuleColor="rgba(255,255,255,0.3)"
             showGrid
             showOutline
             markerConfig={markerConfig}
