@@ -1885,21 +1885,32 @@ function StyleTag() {
         background-image: linear-gradient(100deg,
           var(--shiny-base, ${GOLD}) 35%, ${NEON_PURPLE} 50%, var(--shiny-base, ${GOLD}) 65%);
         background-size: 240% 100%;
-        background-position: 200% 0;
+        /* Resting position (used before the animation-delay below has
+           elapsed, and matching the 0% keyframe exactly so there's no
+           jump when it kicks in) has to land the purple stop fully
+           outside the text — otherwise the very first paint shows a
+           static purple patch wherever the resting position happens to
+           put it. 200% used to put it right on top of the right half of
+           the text at load. 140% sits in the gap between repeats, so
+           nothing purple is visible until the sweep actually reaches it. */
+        background-position: 140% 0;
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
-        /* Repeats every 3s (that cadence was fine), but now sweeps
-           continuously across the whole cycle instead of finishing the
-           traverse in ~55% of it and holding still the rest of the way —
-           same distance covered, roughly half the speed, and no more
-           abrupt snap-back when it loops. */
-        animation: shineSweep 3s ${EASE.inOut} infinite;
+        /* background-position counts down from 140% to -40% each cycle,
+           which — given the gradient's own 240% tile width and the
+           purple stop sitting at its midpoint — enters the text from the
+           left edge, sweeps across to the right, then clears the text
+           entirely before looping back to the (also-hidden) 140%
+           starting point. 4s per cycle (was 3s): a little slower per the
+           latest feedback, still smooth/continuous rather than the old
+           two-phase sweep-then-hold. */
+        animation: shineSweep 4s ${EASE.inOut} infinite;
         animation-delay: 1.1s;
       }
       @keyframes shineSweep {
-        0%   { background-position: 200% 0; }
-        100% { background-position: -60% 0; }
+        0%   { background-position: 140% 0; }
+        100% { background-position: -40% 0; }
       }
 
       /* ── Ambient background glow (very slow, very soft) ─────────────── */
