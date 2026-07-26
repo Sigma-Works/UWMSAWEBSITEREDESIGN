@@ -4,6 +4,7 @@ import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromU
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
 // a visitor actually scrolls near the Quad section.
 const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
+const Globe3D = React.lazy(() => import("./Globe3D.jsx"));
 // Scroll-driven cherry-blossom canvas hero (270-frame sequence). Kept in its
 // own module so the frame-preload logic and canvas loop stay isolated.
 import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
@@ -4797,19 +4798,92 @@ function QuadSection({ data }) {
 }
 
 /* ---------- ABOUT ---------- */
+/* Lazily mounts the Three.js globe next to the About section's title once
+   it's near the viewport (same code-split + useInView pattern as
+   LazyQuadTree above), and only above a width where there's actually room
+   for it — on phones/small tablets it doesn't render at all, so mobile
+   visitors never pay for the three.js chunk, the GeoJSON fetch, or a WebGL
+   context they can't usefully see. Once mounted, Globe3D itself pauses its
+   own render loop whenever it scrolls out of view or the tab is
+   backgrounded (see Globe3D.jsx), so it's cheap to leave mounted after
+   that first reveal. */
+function AboutGlobe() {
+  const reduced = useReducedMotion();
+  const [ref, near] = useInView({ threshold: 0, rootMargin: "400px 0px" });
+  const [wide, setWide] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 900 : false);
+  useEffect(() => {
+    const calc = () => setWide(window.innerWidth >= 900);
+    calc();
+    window.addEventListener("resize", calc, { passive: true });
+    return () => window.removeEventListener("resize", calc);
+  }, []);
+
+  // Object props are memoized so an unrelated re-render of AboutSection
+  // (e.g. admin content edits elsewhere on the page) doesn't hand Globe3D
+  // brand-new object identities on every render — its effect tears down
+  // and rebuilds the whole WebGL scene whenever these change, so keeping
+  // their identity stable matters for not janking the page.
+  const dots = React.useMemo(() => ({ color: GOLD, size: 3.5, density: 6, allDots: false }), []);
+  const markerConfig = React.useMemo(() => ({
+    markers: [{ lat: 47.6062, lng: -122.3321 }], // Seattle, WA
+    color: NEON_PURPLE,
+    size: 55,
+  }), []);
+
+  if (!wide) return null;
+
+  return (
+    <div ref={ref} aria-hidden="true" style={{
+      position: "relative", width: "clamp(200px, 22vw, 300px)", height: "clamp(200px, 22vw, 300px)",
+      flexShrink: 0, margin: "0 auto" }}>
+      <div aria-hidden="true" style={{ position: "absolute", inset: "8%", borderRadius: "50%",
+        filter: "blur(28px)", background: `radial-gradient(circle, ${PURPLE}33 0%, transparent 70%)` }} />
+      {near && (
+        <React.Suspense fallback={null}>
+          <Globe3D
+            speed={reduced ? 0 : 1.3}
+            direction="right"
+            scale={8}
+            detail={5}
+            dragSpeed={4}
+            stopOnHover
+            fill="dots"
+            dots={dots}
+            oceanColor="rgba(91,61,140,0.1)"
+            outlineColor={GOLD}
+            outlineWidth={1}
+            graticuleColor="rgba(201,182,136,0.28)"
+            showGrid
+            showOutline
+            markerConfig={markerConfig}
+          />
+        </React.Suspense>
+      )}
+    </div>
+  );
+}
+
 function AboutSection({ data }) {
   const about = data.about || seed.about;
   return (
     <Band id="about" lattice rosettes="right" decor="left" light lightTone="violet" lightAt="top-right">
-      <SectionCopy data={data} sectionKey="about" />
-      {about.intro && (
-        <Reveal delay={200} variant="up" distance={18}>
-          <div style={{ maxWidth: 720, marginBottom: 34, color: "var(--text-muted)",
-            fontSize: 16.5, lineHeight: 1.7 }}>
-            <Markdown text={about.intro} style={{ margin: "0 0 12px" }} />
-          </div>
+      <div style={{ display: "flex", gap: 40, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ flex: "1 1 420px", minWidth: 0 }}>
+          <SectionCopy data={data} sectionKey="about" />
+          {about.intro && (
+            <Reveal delay={200} variant="up" distance={18}>
+              <div style={{ maxWidth: 720, marginBottom: 34, color: "var(--text-muted)",
+                fontSize: 16.5, lineHeight: 1.7 }}>
+                <Markdown text={about.intro} style={{ margin: "0 0 12px" }} />
+              </div>
+            </Reveal>
+          )}
+        </div>
+        <Reveal delay={280} variant="up" distance={18}>
+          <AboutGlobe />
         </Reveal>
-      )}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
         gap: 18 }}>
         {(about.pillars || []).map((p, n) => (
