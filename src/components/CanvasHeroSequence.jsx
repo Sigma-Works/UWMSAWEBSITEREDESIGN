@@ -31,6 +31,13 @@
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 
+// To swap in a new sequence (e.g. a higher-quality 120-frame re-render):
+// 1. Drop the files in public/hero/lg/ and public/hero/sm/, named
+//    frame-000.webp … frame-{N-1}.webp, zero-padded to 3 digits (works
+//    fine for any count up to 999 — no other change needed for naming).
+// 2. Update FRAME_COUNT below to match the new total.
+// Everything else (preload pool, scroll-to-frame mapping, resolution
+// picking) automatically adapts to whatever count is set here.
 const FRAME_COUNT = 270;
 const BASE = import.meta.env.BASE_URL || "/";
 
@@ -77,8 +84,20 @@ export default function CanvasHeroSequence({
     const canvas = canvasRef.current;
     const img = framesRef.current[i];
     if (!canvas || !img || !img.complete || !img.naturalWidth) return;
-    const ctx = canvas.getContext("2d", { alpha: false });
+    // alpha:false used to be set here on the theory that opaque frames don't
+    // need an alpha channel — but an alpha:false canvas initializes to
+    // opaque BLACK before anything is drawn to it (rather than transparent),
+    // so any brief unpainted moment (a resize mid-transition, a dropped
+    // frame while scrubbing fast) flashed solid black instead of just
+    // showing whatever was behind it. Default (alpha) canvas costs nothing
+    // extra here since we always draw a full-cover opaque image anyway.
+    const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    // Higher-quality downscaling when the frame is bigger than its on-
+    // screen size (e.g. the "lg" 1152px set on a smaller laptop window) —
+    // default browser scaling can look soft/aliased otherwise.
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     const cw = canvas.width;
     const ch = canvas.height;
