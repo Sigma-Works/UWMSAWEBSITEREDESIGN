@@ -101,14 +101,30 @@ async function main() {
 
   console.log(`Fetching live times for masjid_id=${masjidId}…`);
   const widgetUrl = `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(masjidId)}&color=000000`;
-  const html = await fetch(widgetUrl).then((r) => {
-    if (!r.ok) throw new Error(`AthanPlus fetch failed: ${r.status}`);
-    return r.text();
+  // A GitHub Actions runner has no browser fingerprint at all by default
+  // (no User-Agent, datacenter IP) — some sites quietly serve a blocked/
+  // challenge/empty page to requests like that instead of a real 4xx/5xx,
+  // which is indistinguishable from "the markup changed" unless we look
+  // at what actually came back. A normal browser User-Agent is enough to
+  // get past simple bot-filtering; the diagnostic dump below (only prints
+  // when parsing fails) covers the case where it isn't.
+  const res = await fetch(widgetUrl, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
   });
+  console.log(`AthanPlus responded ${res.status} (final URL: ${res.url})`);
+  if (!res.ok) throw new Error(`AthanPlus fetch failed: ${res.status}`);
+  const html = await res.text();
 
   const parsed = parseAthanPlusTimes(html);
   const found = Object.keys(parsed);
-  if (found.length === 0) fail("Could not find any prayer times in the fetched page — markup may have changed.");
+  if (found.length === 0) {
+    console.error(`Got ${html.length} bytes back. First 800 chars:\n${html.slice(0, 800)}`);
+    fail("Could not find any prayer times in the fetched page — see the dump above for what actually came back.");
+  }
   console.log(`Parsed: ${JSON.stringify(parsed)}`);
   if (found.length < PRAYER_ORDER.length) {
     console.warn(`⚠ Only found ${found.length}/${PRAYER_ORDER.length} prayers — writing what was found, leaving the rest as-is.`);
