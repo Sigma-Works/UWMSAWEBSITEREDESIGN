@@ -1167,11 +1167,16 @@ const seed = {
     hours: "Open for all five daily prayers · Jummah every Friday",
     body: "The Islamic House is the heart of Muslim student life at UW. It hosts daily congregational prayers, Friday Jummah, Ramadan iftars and taraweeh, and community gatherings all year round. MSA works hand in hand with the House — many of our events happen here.\n\nEveryone is welcome, whether you're coming for prayer, for iftar, or just to find your feet on campus.",
     donateUrl: "https://www.zeffy.com/en-US/donation-form/0b12beb3-2da5-4c6b-87b9-cfc84cf47e6a",
-    // A future/renovation photo of the building, shown above the "Visit"
-    // card — separate from the `photos` gallery below since it's meant to
-    // be a single featured image, not a grid entry. Empty by default;
-    // admins add it from the Islamic House tab.
+    // Future/renovation photo(s) of the building, shown above the "Visit"
+    // card as a small slideshow — separate from the `photos` gallery below
+    // since it's meant to be one featured slot, not a grid entry. Empty by
+    // default; admins add photos from the Islamic House tab.
+    // `futureImage` (singular) is the old single-photo field, kept around
+    // so a site that already had one saved doesn't lose it — see the
+    // migration fallback in IslamicHouseSection, which folds it into
+    // `futureImages` as the first slide if that array is still empty.
     futureImage: "",
+    futureImages: [],
     features: [
       { id: 1, title: "Daily prayers", text: "All five prayers in congregation, every day." },
       { id: 2, title: "Jummah", text: "Two khutbahs each Friday — check the prayer section for times." },
@@ -4867,6 +4872,14 @@ function IslamicHouseSection({ data }) {
   const [lightbox, setLightbox] = useState(null);
   const photos = h.photos || [];
   const navLightbox = (dir) => setLightbox((i) => (i === null ? null : (i + dir + photos.length) % photos.length));
+  // futureImages is the new multi-photo slideshow field. h.futureImage
+  // (singular) was the old single-photo field it replaces — if a site
+  // already had one of those saved and hasn't added anything to the new
+  // array yet, show it as the slideshow's one slide instead of the empty
+  // placeholder, so upgrading doesn't lose an admin's existing photo.
+  const futureImages = (h.futureImages && h.futureImages.length)
+    ? h.futureImages
+    : (h.futureImage ? [{ id: "legacy", img: h.futureImage, caption: "" }] : []);
   return (
     <Band id="islamic-house" lattice rosettes="both" decor="right" light lightTone="gold" lightAt="bottom-right">
       {/* tasbih swaying quietly in the margin */}
@@ -4963,16 +4976,15 @@ function IslamicHouseSection({ data }) {
             </div>
           </Reveal>
 
-          {/* Building photo — real image once an admin adds one, else a quiet
-              placeholder so the layout doesn't jump. */}
+          {/* Building photo slot — same position/size (right column,
+              second item, 4:3 box) as before, now a small slideshow when
+              there's more than one photo. A single photo (or the legacy
+              futureImage) renders exactly as it did previously, with no
+              arrows; zero photos keeps the original "coming soon"
+              placeholder so the layout never jumps. */}
           <Reveal variant="right" distance={26} delay={140} duration={DUR.slow}>
-            {h.futureImage ? (
-              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
-                aspectRatio: "4 / 3" }}>
-                <img src={h.futureImage} alt="Future Islamic House building" loading="lazy"
-                  decoding="async"
-                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-              </div>
+            {futureImages.length > 0 ? (
+              <ImageSlideshow images={futureImages} alt="Future Islamic House building" />
             ) : (
               <div style={{ ...card, aspectRatio: "4 / 3", display: "grid", placeItems: "center",
                 gap: 8, textAlign: "center", padding: 20,
@@ -5021,6 +5033,69 @@ function IslamicHouseSection({ data }) {
    Generic enough to reuse anywhere a plain photo array needs browsing
    (currently just the Islamic House photos, which have no carousel of
    their own the way the home page Moments gallery does). */
+/* Small inline slideshow for a single featured photo slot — same 4:3 card
+   box a lone image used to sit in, just with prev/next arrows and dot
+   indicators once there's more than one photo. Deliberately lighter than
+   PhotoLightbox (no fullscreen overlay, no keyboard/scroll locking) since
+   this lives inline in the page layout, not as a modal. */
+function ImageSlideshow({ images, alt }) {
+  const [i, setI] = useState(0);
+  const reduced = useReducedMotion();
+  const n = images.length;
+  // Clamp if the array shrinks (e.g. an admin deletes the slide being shown).
+  useEffect(() => { if (i > n - 1) setI(Math.max(0, n - 1)); }, [n, i]);
+
+  const go = (dir) => setI((cur) => (cur + dir + n) % n);
+  const cur = images[i];
+
+  return (
+    <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
+      aspectRatio: "4 / 3", position: "relative" }}>
+      {cur?.img
+        ? <img key={cur.id ?? i} src={cur.img} alt={cur.caption || alt} loading="lazy" decoding="async"
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+        : <div style={{ width: "100%", height: "100%",
+            background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }} />}
+
+      {n > 1 && (
+        <>
+          <button type="button" onClick={() => go(-1)} aria-label="Previous photo"
+            style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)",
+              width: 32, height: 32, borderRadius: "50%", border: "1px solid rgba(255,255,255,.35)",
+              background: "rgba(20,17,24,.55)", color: "#fff", display: "grid", placeItems: "center",
+              cursor: "pointer" }}>
+            <ChevronLeft size={17} />
+          </button>
+          <button type="button" onClick={() => go(1)} aria-label="Next photo"
+            style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+              width: 32, height: 32, borderRadius: "50%", border: "1px solid rgba(255,255,255,.35)",
+              background: "rgba(20,17,24,.55)", color: "#fff", display: "grid", placeItems: "center",
+              cursor: "pointer" }}>
+            <ChevronRight size={17} />
+          </button>
+          {/* dot indicators — also clickable, jump straight to a slide */}
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 10,
+            display: "flex", justifyContent: "center", gap: 6 }}>
+            {images.map((im, di) => (
+              <button key={im.id ?? di} type="button" onClick={() => setI(di)}
+                aria-label={`Go to photo ${di + 1}`} aria-current={di === i}
+                style={{ width: di === i ? 16 : 6, height: 6, borderRadius: 999, border: "none",
+                  padding: 0, cursor: "pointer", background: di === i ? "#fff" : "rgba(255,255,255,.45)",
+                  transition: reduced ? "none" : `width ${DUR.fast}ms ${EASE.out}` }} />
+            ))}
+          </div>
+        </>
+      )}
+      {cur?.caption && (
+        <div style={{ position: "absolute", left: 10, right: 10, top: 10, fontSize: 12,
+          fontWeight: 700, color: "#fff", textShadow: "0 1px 6px rgba(0,0,0,.6)" }}>
+          {cur.caption}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PhotoLightbox({ photos, index, onClose, onNav }) {
   useEffect(() => {
     if (index === null) return;
@@ -6374,6 +6449,16 @@ function Editor({ tab, data, setData }) {
     const photos = h.photos || [];
     const editF = (i, patch) => { const c = [...feats]; c[i] = { ...c[i], ...patch }; setH({ features: c }); };
     const editPh = (i, patch) => { const c = [...photos]; c[i] = { ...c[i], ...patch }; setH({ photos: c }); };
+    // Same legacy-migration read as the public section: once an admin
+    // touches this list at all, it's saved under futureImages going
+    // forward and the old singular futureImage field is just along for
+    // the ride (harmless, unused once futureImages is non-empty).
+    const futureImgs = (h.futureImages && h.futureImages.length)
+      ? h.futureImages
+      : (h.futureImage ? [{ id: "legacy", img: h.futureImage, caption: "" }] : []);
+    const editFI = (i, patch) => {
+      const c = [...futureImgs]; c[i] = { ...c[i], ...patch }; setH({ futureImages: c });
+    };
     return (
       <Section title="Islamic House">
         <Field label="Address"><input style={inp} value={h.address || ""}
@@ -6387,10 +6472,45 @@ function Editor({ tab, data, setData }) {
           onChange={(e) => setH({ body: e.target.value })} /></Field>
         <Field label="Donation URL"><input style={inp} value={h.donateUrl || ""}
           onChange={(e) => setH({ donateUrl: e.target.value })} /></Field>
-        <Field label="Future building photo (shown above the 'Visit' card — optional)">
-          <ImageField label="Future building photo" value={h.futureImage || ""} folder="house"
-            onChange={(url) => setH({ futureImage: url })} />
-        </Field>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          margin: "10px 0" }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
+            Future building photo(s)</h4>
+          <button onClick={() => setH({ futureImages: [...futureImgs, { id: Date.now(), img: "", caption: "" }] })}
+            style={miniBtn}><Plus size={14} /> Add</button>
+        </div>
+        <p style={{ margin: "-4px 0 12px", fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Shown above the "Visit" card. One photo shows as-is; add more and it
+          becomes a slideshow with arrows automatically — no extra setup needed.
+        </p>
+        {futureImgs.length === 0 && (
+          <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 8, marginBottom: 12,
+            textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
+            None yet — shows a "coming soon" placeholder on the site</div>
+        )}
+        <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
+          {futureImgs.map((p, i) => (
+            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
+              <ImageField label="Photo" value={p.img || ""} folder="house"
+                onChange={(url) => editFI(i, { img: url })} />
+              <div><label style={lbl}>Caption (optional)</label>
+                <input style={inpSm} value={p.caption || ""}
+                  onChange={(e) => editFI(i, { caption: e.target.value })} /></div>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button onClick={() => i > 0 && setH({ futureImages: arraySwap(futureImgs, i, i - 1) })}
+                  disabled={i === 0} style={i === 0 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo up"><ArrowUp size={14} /></button>
+                <button onClick={() => i < futureImgs.length - 1 && setH({ futureImages: arraySwap(futureImgs, i, i + 1) })}
+                  disabled={i === futureImgs.length - 1} style={i === futureImgs.length - 1 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo down"><ArrowDown size={14} /></button>
+                <button onClick={() => setH({ futureImages: futureImgs.filter((_, n) => n !== i) })}
+                  style={delBtn} aria-label="Delete photo"><Trash2 size={15} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
           margin: "10px 0" }}>
