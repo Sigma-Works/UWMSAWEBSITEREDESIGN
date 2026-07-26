@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
+import { createPortal } from "react-dom";
 import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl,
   subscribe, listSubscribers, logAdminChange, listAdminLog } from "./supabase";
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
@@ -2153,26 +2154,144 @@ function parsePrayerToMinutes(str) {
   return h * 60 + min;
 }
 
-function NextPrayerTimer({ times, compact = false }) {
+// MSA is in Seattle, and every prayer time on the site is a Seattle local
+// time — but `new Date().getHours()` reads the VISITOR's device clock,
+// which is only correct by coincidence. A visitor whose laptop/phone is
+// set to a different timezone (traveling, a device that hasn't picked up
+// the local zone, a browser override, etc.) got a countdown computed
+// against the wrong "now" entirely — sometimes off by hours, which is the
+// "wrong countdown" this fixes. Reading the wall-clock time via an
+// explicit America/Los_Angeles Intl formatter (rather than a fixed UTC
+// offset) also means it stays correct across the PST/PDT daylight-saving
+// switch automatically.
+function getSeattleNowMinutes(date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(date);
+  const get = (type) => Number(parts.find((p) => p.type === type)?.value || 0);
+  // Midnight in the 24h format above can come back as "24" instead of "00"
+  // in some engines — normalize so it doesn't throw the minute count off
+  // by a full day.
+  const hour = get("hour") % 24;
+  return hour * 60 + get("minute") + get("second") / 60;
+}
+
+// Pulls today's actual "STARTS" times straight out of the same live
+// AthanPlus widget the popup already embeds, so the nav countdown tracks
+// reality instead of manually-entered fields that drift out of date
+// (prayer times shift a few minutes every day). Deliberately tag-strips
+// rather than parsing specific HTML structure — Masjidal/AthanPlus don't
+// publish a documented API or markup contract for this widget, so
+// anchoring on the visible "Fajr ... 3:46 AM" text is more likely to
+// survive a styling change on their end than matching specific classes
+// would be.
+//
+// The page lists a full week, one block per day, but there's no need to
+// isolate "today's" block: today's is always first in document order, so
+// a plain (non-global) match against the whole page already lands on
+// today's occurrence of each prayer name — String.match() returns the
+// first hit. An earlier version tried to find where today's block "ends"
+// by locating the *second* occurrence of the heading text "PRAYER
+// TIMINGS" and slicing everything before it, which breaks in practice
+// because the page's own <title> tag ("Masjidal - Prayer timings") also
+// contains that phrase — throwing the occurrence count off by one and
+// slicing away the real table data instead of the days after it.
+// Matching directly against the full text sidesteps that fragility.
+function parseAthanPlusTimes(html) {
+  const text = String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const out = {};
+  for (const name of PRAYER_ORDER) {
+    // e.g. "Fajr 3:46 AM 4:30 AM" — the first time is the start (adhan);
+    // the second (bold, "Iqamah") isn't what the countdown should track.
+    const m = text.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
+    if (m) out[name] = m[1].toUpperCase();
+  }
+  return out;
+}
+
+// Fetched at most once an hour (prayer times don't change faster than
+// that) and only when a masjidalId is actually configured, matching the
+// existing "live widget vs. manual times" gating everywhere else on the
+// site. Any failure — CORS not permitted from this origin, the endpoint
+// being down, the page's markup no longer matching — is swallowed and
+// simply leaves liveTimes empty, so callers fall back to the manual
+// fields instead of breaking the countdown entirely.
+function useLiveMasjidalTimes(masjidId) {
+  const [liveTimes, setLiveTimes] = useState(null);
+
+  useEffect(() => {
+    const id = (masjidId || "").trim();
+    if (!id) { setLiveTimes(null); return; }
+    let cancelled = false;
+    const load = async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const url = `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(id)}&color=000000`;
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`bad response: ${res.status}`);
+        const html = await res.text();
+        const parsed = parseAthanPlusTimes(html);
+        if (!cancelled && Object.keys(parsed).length > 0) setLiveTimes(parsed);
+      } catch {
+        // CORS block, network hiccup, unexpected markup, etc. — stay
+        // silent and let the manual-times fallback handle it.
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    load();
+    const hourly = setInterval(load, 60 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(hourly); };
+  }, [masjidId]);
+
+  return liveTimes;
+}
+
+// All the "figure out what's next and how long until it" logic, lifted
+// out of the pill component itself so Nav can call this ONCE and render
+// the pill twice (desktop bar + mobile bar) off the same computed state.
+// Two separately-mounted NextPrayerTimers used to mean two independent
+// tickers and two independent attempts at the live AthanPlus fetch —
+// harmless individually, but pointless duplication for something that's
+// identical either way, and content the "run smoothly, minimal memory"
+// standard this whole rebuild has been held to.
+function usePrayerCountdown(times) {
   const [now, setNow] = useState(() => new Date());
-  const [open, setOpen] = useState(false);
+  const liveTimes = useLiveMasjidalTimes(times?.masjidalId);
+  // Live-fetched values win when present; anything the fetch didn't
+  // cover (or couldn't get at all) falls back to the manual fields.
+  const effectiveTimes = React.useMemo(() => ({ ...times, ...liveTimes }), [times, liveTimes]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Build today's prayer schedule in minutes; memoized on the times object.
+  // Build today's prayer schedule in minutes, sorted chronologically —
+  // memoized on the merged times object. The sort is defensive: PRAYER_ORDER's
+  // names are already in time order, but an admin typo (e.g. an AM/PM
+  // slip on one prayer) shouldn't be able to make the "next prayer" search
+  // below skip over an earlier time just because it appears later in the
+  // array.
   const schedule = React.useMemo(() => {
-    if (!times) return [];
+    if (!effectiveTimes) return [];
     return PRAYER_ORDER
-      .map((name) => ({ name, mins: parsePrayerToMinutes(times[name]) }))
-      .filter((p) => p.mins != null);
-  }, [times]);
+      .map((name) => ({ name, mins: parsePrayerToMinutes(effectiveTimes[name]) }))
+      .filter((p) => p.mins != null)
+      .sort((a, b) => a.mins - b.mins);
+  }, [effectiveTimes]);
 
   if (schedule.length === 0) return null;
 
-  const nowMins = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  const nowMins = getSeattleNowMinutes(now);
   let next = schedule.find((p) => p.mins > nowMins);
   let crossesMidnight = false;
   if (!next) { next = schedule[0]; crossesMidnight = true; } // wrap to tomorrow's Fajr
@@ -2187,23 +2306,27 @@ function NextPrayerTimer({ times, compact = false }) {
   const pad = (n) => String(n).padStart(2, "0");
   const countdown = hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
 
+  return { next, countdown };
+}
+
+// Pure presentational pill — no fetching or ticking of its own, just
+// renders whatever usePrayerCountdown handed it. Safe to mount more than
+// once (desktop bar, mobile bar) since it's just a button.
+function PrayerCountdownPill({ next, countdown, compact = false, onClick }) {
   return (
-    <>
-      <button onClick={() => setOpen(true)} title="Prayer times"
-        aria-label={`Next prayer ${next.name} in ${countdown}`}
-        style={{ display: "inline-flex", alignItems: "center", gap: 7,
-          padding: compact ? "7px 12px" : "8px 14px", borderRadius: 999,
-          border: "1px solid var(--border)", background: "var(--tint)",
-          cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
-          color: "var(--text)", fontSize: compact ? 12.5 : 13, fontWeight: 600 }}>
-        <Clock size={compact ? 13 : 14} color="var(--accent)" />
-        <span style={{ color: "var(--text-muted)" }}>{next.name} in</span>
-        <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--accent)" }}>
-          {countdown}
-        </span>
-      </button>
-      {open && <MasjidalPopup times={times} onClose={() => setOpen(false)} />}
-    </>
+    <button onClick={onClick} title="Prayer times"
+      aria-label={`Next prayer ${next.name} in ${countdown}`}
+      style={{ display: "inline-flex", alignItems: "center", gap: 7,
+        padding: compact ? "7px 12px" : "8px 14px", borderRadius: 999,
+        border: "1px solid var(--border)", background: "var(--tint)",
+        cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+        color: "var(--text)", fontSize: compact ? 12.5 : 13, fontWeight: 600 }}>
+      <Clock size={compact ? 13 : 14} color="var(--accent)" />
+      <span style={{ color: "var(--text-muted)" }}>{next.name} in</span>
+      <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--accent)" }}>
+        {countdown}
+      </span>
+    </button>
   );
 }
 
@@ -2234,18 +2357,63 @@ function MasjidalPopup({ times, onClose }) {
     ? `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(id)}&color=000000`
     : "";
 
-  return (
+  // Rendered through a portal straight into <body>, deliberately outside
+  // the Nav <header> subtree. The header has an always-on backdrop-filter
+  // (for the blur/frosted-glass look), and backdrop-filter — like
+  // transform and filter — creates a "containing block" for any
+  // position:fixed descendant. That silently meant this popup's
+  // fixed/inset:0 was being measured against the ~70px-tall header
+  // instead of the actual viewport: its overlay only ever covered the
+  // header's own box, so the card (and its darkened backdrop) rendered
+  // there and nowhere else, leaving the rest of the page — including the
+  // home hero underneath — completely uncovered instead of dimmed. No
+  // amount of z-index or padding tuning fixes that; escaping the subtree
+  // entirely via createPortal does.
+  return createPortal((
     <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,14,.62)",
         backdropFilter: "blur(4px)",
-        // Center the popup with top padding clearing the fixed nav. The box
-        // caps its own height and scrolls its body internally, so it's never
-        // taller than the screen and the header/X is always visible.
-        display: "flex", justifyContent: "center", alignItems: "center",
-        padding: "88px 16px 24px" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
-        maxHeight: "calc(100dvh - 112px)", display: "flex", flexDirection: "column",
+        // Symmetric padding, so flexbox centers the card on the actual
+        // middle of the screen. This used to reserve 88px up top
+        // specifically "to clear the nav" — unnecessary (and wrong): the
+        // overlay is z-index 200, already well above the nav/announcement
+        // bar's 50/51, so it renders over them regardless of padding. That
+        // lopsided padding just pushed the card below true center, and
+        // combined with a max-height that silently stopped applying in any
+        // browser without `dvh` support (see .masjidal-card below), the
+        // card could grow past the viewport and get centered half off the
+        // top edge — which is what was making the close button
+        // unreachable, not the announcement bar itself.
+        display: "flex", justifyContent: "center",
+        padding: "24px 16px",
+        // Belt-and-suspenders: the card's own max-height (below) should
+        // always keep it within the viewport, but if it somehow doesn't
+        // (an embedded widget rendering taller than expected, a viewport
+        // unit quirk in some browser), letting the OVERLAY itself scroll
+        // means the header/close button can still be reached by scrolling
+        // up, instead of being permanently stuck off-screen with no way
+        // back to it. Deliberately NOT using alignItems:"center" here —
+        // centering the cross axis that way clips whatever's "before
+        // center" the instant content overflows, with no way to scroll up
+        // to reach it (a well-known flexbox gotcha). `margin: auto 0` on
+        // the card itself (below) gets the same centering while degrading
+        // to plain top alignment — no clipping — once it doesn't fit.
+        overflowY: "auto", overscrollBehavior: "contain" }}>
+      <div className="masjidal-card" onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
+        display: "flex", flexDirection: "column", flexShrink: 0, margin: "auto 0",
         overflow: "hidden", position: "relative", padding: 0 }}>
+        <style>{`
+          .masjidal-card {
+            /* vh first as a universally-supported fallback: an engine that
+               doesn't understand dvh treats the second declaration as
+               invalid and ignores it, keeping this one, instead of
+               dropping max-height entirely. dvh then overrides it where
+               supported, since it accounts for mobile browsers' address
+               bar collapsing/expanding, which plain vh doesn't. */
+            max-height: calc(100vh - 48px);
+            max-height: calc(100dvh - 48px);
+          }
+        `}</style>
         {/* fixed header (doesn't scroll) — X always visible */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "14px 18px", borderBottom: "1px solid var(--border)",
@@ -2290,7 +2458,7 @@ function MasjidalPopup({ times, onClose }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 /* Minimal allowlist sanitizer for an admin-pasted <iframe> embed: strips
@@ -2316,6 +2484,10 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
   const [progress, setProgress] = useState(0);
   const [openMenu, setOpenMenu] = useState(null);  // which dropdown is open
   const navRef = useRef(null);
+  // Computed once here (not per-pill) so the desktop and mobile countdown
+  // pills below share one ticker/fetch instead of each running their own.
+  const countdown = usePrayerCountdown(prayerTimes);
+  const [prayerOpen, setPrayerOpen] = useState(false);
 
   useEffect(() => {
     let ticking = false, raf = 0;
@@ -2386,7 +2558,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         opacity: progress > 0.005 ? 1 : 0,
         transition: `opacity ${DUR.base}ms ${EASE.out}` }} />
 
-      <nav style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px",
+      <nav style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px", position: "relative",
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <button className="btn logomark" onClick={() => onNav("/")} aria-label="MSA at UW — home"
           style={{ display: "flex", alignItems: "center", gap: 10, background: "none",
@@ -2397,6 +2569,26 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
               transform: solid ? "scale(.86)" : "scale(1)",
               transition: `transform ${DUR.base}ms ${EASE.out}` }} />
         </button>
+
+        {/* ── Mobile-only countdown pill ───────────────────────────────
+            NextPrayerTimer/PrayerCountdownPill previously only rendered
+            once, inside .desk (hidden below 980px) — mobile visitors
+            never saw it at all, not even tucked into the hamburger menu.
+            This is the same shared countdown state (see usePrayerCountdown
+            above), just a second PrayerCountdownPill shown only under the
+            980px breakpoint (nav .mob { display: flex !important }, see
+            the media query below) and absolutely centered against <nav>
+            (position:relative, above) rather than relying on flexbox
+            space-between to land it in the middle — that'd only be
+            approximately centered, and its exact position would depend on
+            the logo and hamburger button happening to be the same width. */}
+        {countdown && (
+          <div className="mob" style={{ display: "none", position: "absolute",
+            left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}>
+            <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
+              compact onClick={() => setPrayerOpen(true)} />
+          </div>
+        )}
 
         {/* ── Desktop ─────────────────────────────────────────────────── */}
         <div className="desk" style={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -2430,7 +2622,10 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             );
           })}
 
-          <NextPrayerTimer times={prayerTimes} />
+          {countdown && (
+            <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
+              onClick={() => setPrayerOpen(true)} />
+          )}
           <button className="btn" onClick={onSearch} aria-label="Search the site"
             title="Search (⌘K)" style={iconBtn}>
             <Search size={16} color="var(--accent)" />
@@ -2545,6 +2740,11 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         @media (max-width: 980px) { .desk { display: none !important; } .mob { display: block !important; } }
         @media (max-width: 980px) { nav .mob { display: flex !important; } }
       `}</style>
+
+      {/* Single shared popup regardless of which pill (desktop or mobile)
+          opened it — avoids mounting MasjidalPopup twice for what's the
+          same dialog either way. */}
+      {prayerOpen && <MasjidalPopup times={prayerTimes} onClose={() => setPrayerOpen(false)} />}
     </>
   );
 }
