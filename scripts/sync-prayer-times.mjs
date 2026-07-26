@@ -122,8 +122,24 @@ async function main() {
   const parsed = parseAthanPlusTimes(html);
   const found = Object.keys(parsed);
   if (found.length === 0) {
-    console.error(`Got ${html.length} bytes back. First 800 chars:\n${html.slice(0, 800)}`);
-    fail("Could not find any prayer times in the fetched page — see the dump above for what actually came back.");
+    // The tag-stripped text search came up empty even though we got a
+    // real 200 response — most likely explanation: the times aren't in
+    // static markup at all, they're rendered client-side by JS (a plain
+    // fetch()+text() never runs that JS, unlike a real browser), and the
+    // actual data is sitting in a <script> block that parseAthanPlusTimes
+    // deliberately strips out before searching. Search the RAW,
+    // un-stripped html for "Fajr" (wherever it is — script, table,
+    // data attribute, doesn't matter) and print a window around it, so
+    // the next run tells us exactly where the data actually lives
+    // instead of us guessing again.
+    const rawIdx = html.search(/Fajr/i);
+    if (rawIdx === -1) {
+      console.error(`Got ${html.length} bytes back, and "Fajr" doesn't appear ANYWHERE in the raw response. First 1500 chars:\n${html.slice(0, 1500)}`);
+    } else {
+      const start = Math.max(0, rawIdx - 300);
+      console.error(`Got ${html.length} bytes back. Raw html around the first "Fajr" (byte ${rawIdx}):\n${html.slice(start, start + 1200)}`);
+    }
+    fail("Could not find any prayer times in the fetched page — see the dump above for where 'Fajr' actually shows up.");
   }
   console.log(`Parsed: ${JSON.stringify(parsed)}`);
   if (found.length < PRAYER_ORDER.length) {
