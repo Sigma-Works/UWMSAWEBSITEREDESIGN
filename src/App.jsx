@@ -374,9 +374,17 @@ const MotionPrefsContext = createContext({
   motionOff: false, setMotionOff: () => {},
   glowOff: false, setGlowOff: () => {},
   rippleOff: false, setRippleOff: () => {},
+  dark: false,
 });
 function useMotionPrefs() {
   return useContext(MotionPrefsContext);
+}
+// Live light/dark reading, piggybacking on the same provider as the motion
+// prefs (both are "site-wide visual settings read deep in the tree") so
+// components like the About globe can pick theme-appropriate colors
+// without threading a `dark` prop down through every intermediate section.
+function useTheme() {
+  return useContext(MotionPrefsContext).dark;
 }
 
 // Single source of truth for the reduced-motion preference, kept live so
@@ -1565,7 +1573,7 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem("msa-motion-off", motionOff ? "on" : "off"); } catch {} }, [motionOff]);
   useEffect(() => { try { localStorage.setItem("msa-glow-off", glowOff ? "on" : "off"); } catch {} }, [glowOff]);
   useEffect(() => { try { localStorage.setItem("msa-ripple-off", rippleOff ? "on" : "off"); } catch {} }, [rippleOff]);
-  const motionPrefs = { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff };
+  const motionPrefs = { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff, dark };
   // App() renders the Provider that everything below it reads from, so it
   // can't consume its own context — combine its one direct use (RippleField)
   // with the local motionOff state by hand instead.
@@ -4810,6 +4818,7 @@ function QuadSection({ data }) {
    that first reveal. */
 function AboutGlobe() {
   const reduced = useReducedMotion();
+  const dark = useTheme();
   const [ref, near] = useInView({ threshold: 0, rootMargin: "400px 0px" });
   const [wide, setWide] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth >= 900 : false);
@@ -4820,20 +4829,33 @@ function AboutGlobe() {
     return () => window.removeEventListener("resize", calc);
   }, []);
 
+  // Dark surfaces get a neon-WHITE globe (pops against the dark bg, with
+  // a purple secondary glow for brand color). Light surfaces flip to a
+  // neon-PURPLE globe instead — white dots/outline all but disappear on
+  // the light theme's pale background, which is what prompted this in
+  // the first place. The purple+gold glow pairing on the light side
+  // reuses the same "neon" duo the rosary medallion glow uses elsewhere.
+  // The Seattle marker swaps to whichever of the two isn't the globe's
+  // own color, so it keeps standing out against the sphere either way.
+  const globeColor = dark ? NEON_WHITE : NEON_PURPLE;
+  const markerColor = dark ? NEON_PURPLE : GOLD_D;
+  const glowA = dark ? NEON_WHITE : NEON_PURPLE;
+  const glowB = dark ? NEON_PURPLE : NEON_GOLD;
+  const graticuleRgba = dark ? "rgba(255,255,255,0.3)" : "rgba(184,75,255,0.32)";
+
   // Object props are memoized so an unrelated re-render of AboutSection
   // (e.g. admin content edits elsewhere on the page) doesn't hand Globe3D
   // brand-new object identities on every render — its effect tears down
   // and rebuilds the whole WebGL scene whenever these change, so keeping
-  // their identity stable matters for not janking the page.
-  // Neon-white landmass dots/outline (rather than the muted gold used
-  // elsewhere) so the globe reads as its own bright, glowing accent next
-  // to the title instead of blending into the section's gold trim.
-  const dots = React.useMemo(() => ({ color: NEON_WHITE, size: 4, density: 6, allDots: false }), []);
+  // their identity stable (and only changing when the theme actually
+  // flips) matters for not janking the page.
+  const dots = React.useMemo(() => ({ color: globeColor, size: 4, density: 6, allDots: false }),
+    [globeColor]);
   const markerConfig = React.useMemo(() => ({
     markers: [{ lat: 47.6062, lng: -122.3321 }], // Seattle, WA
-    color: NEON_PURPLE,
+    color: markerColor,
     size: 60,
-  }), []);
+  }), [markerColor]);
 
   if (!wide) return null;
 
@@ -4841,14 +4863,14 @@ function AboutGlobe() {
     <div ref={ref} aria-hidden="true" style={{
       position: "relative", width: "clamp(260px, 28vw, 380px)", height: "clamp(260px, 28vw, 380px)",
       flexShrink: 0, margin: "0 auto" }}>
-      {/* Layered neon-white + purple halo behind the sphere — same "glow
-          ring" language as the rosary medallion's neon effect elsewhere
-          on the site, just softer since this sits behind real 3D content
-          rather than being the whole effect. */}
+      {/* Layered neon halo behind the sphere — same "glow ring" language
+          as the rosary medallion's neon effect elsewhere on the site,
+          just softer since this sits behind real 3D content rather than
+          being the whole effect. Colors follow the theme, see above. */}
       <div aria-hidden="true" style={{ position: "absolute", inset: "4%", borderRadius: "50%",
-        filter: "blur(30px)", background: `radial-gradient(circle, ${NEON_WHITE}26 0%, transparent 68%)` }} />
+        filter: "blur(30px)", background: `radial-gradient(circle, ${glowA}26 0%, transparent 68%)` }} />
       <div aria-hidden="true" style={{ position: "absolute", inset: "10%", borderRadius: "50%",
-        filter: "blur(22px)", background: `radial-gradient(circle, ${NEON_PURPLE}30 0%, transparent 72%)` }} />
+        filter: "blur(22px)", background: `radial-gradient(circle, ${glowB}30 0%, transparent 72%)` }} />
       {near && (
         <React.Suspense fallback={null}>
           <Globe3D
@@ -4861,9 +4883,9 @@ function AboutGlobe() {
             fill="dots"
             dots={dots}
             oceanColor="rgba(91,61,140,0.1)"
-            outlineColor={NEON_WHITE}
+            outlineColor={globeColor}
             outlineWidth={1.3}
-            graticuleColor="rgba(255,255,255,0.3)"
+            graticuleColor={graticuleRgba}
             showGrid
             showOutline
             markerConfig={markerConfig}
