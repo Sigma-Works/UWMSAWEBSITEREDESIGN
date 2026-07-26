@@ -145,6 +145,12 @@ function Star8({ size = 40, color = GOLD, opacity = 1, className = "" }) {
 
 // Girih tessellation — interlocking 8-point stars linked into a tile grid,
 // generated so the geometry is exact. Used as a repeating decorative band.
+// Monotonic counter so every GirihBand instance gets a unique pattern id,
+// even when two bands share the same color/unit on one page. (Duplicate SVG
+// ids would let one band's url(#id) resolve to another's pattern.)
+let _girihCounter = 0;
+function girihUid() { _girihCounter += 1; return _girihCounter; }
+
 function girihTile(unit, color) {
   const c = unit / 2, outer = unit * 0.4, inner = unit * 0.21;
   const star = [];
@@ -159,7 +165,18 @@ function girihTile(unit, color) {
   return { star: star.join(" "), spokes };
 }
 function GirihBand({ color = GOLD, bg = "transparent", height = 60, opacity = 0.5, unit = 60 }) {
-  const id = "girih-" + Math.round(unit) + "-" + color.replace("#", "");
+  // Build a DOM-safe, unique pattern id. The old version interpolated the
+  // raw color into the id — fine for "#c9b688", but colors like
+  // "rgba(201,182,136,.4)" left parentheses/commas/dots in the id, making
+  // url(#...) fail to resolve. A failed pattern reference makes the <rect>
+  // fall back to its default fill (BLACK) — that was the black bar. Slugify
+  // so only [a-z0-9-] survive, and keep a counter so two bands with the
+  // same color still get distinct ids.
+  const slug = String(color).replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  // Stable across re-renders so the pattern reference never dangles.
+  const idRef = useRef(null);
+  if (!idRef.current) idRef.current = `girih-${Math.round(unit)}-${slug}-${girihUid()}`;
+  const id = idRef.current;
   const { star, spokes } = girihTile(unit, color);
   return (
     <svg width="100%" height={height} preserveAspectRatio="xMidYMid slice"
@@ -175,6 +192,10 @@ function GirihBand({ color = GOLD, bg = "transparent", height = 60, opacity = 0.
           </g>
         </pattern>
       </defs>
+      {/* fill="transparent" first guarantees that even if the pattern
+          reference ever fails to resolve, the rect stays see-through
+          instead of falling back to SVG's default black fill. */}
+      <rect width="100%" height={height} fill="transparent" />
       <rect width="100%" height={height} fill={`url(#${id})`} />
     </svg>
   );
