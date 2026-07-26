@@ -2212,8 +2212,29 @@ function MasjidalPopup({ times, onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
+    // Lock body scroll without losing the reader's place: pin the body at
+    // its current scroll offset, then restore it on close. (Plain
+    // overflow:hidden can make the page jump to the top on some browsers,
+    // which is disorienting when the popup is opened from far down the page.)
+    const scrollY = window.scrollY;
+    const prev = {
+      position: document.body.style.position,
+      top: document.body.style.top,
+      width: document.body.style.width,
+      overflow: document.body.style.overflow,
+    };
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = "100%";
     document.body.style.overflow = "hidden";
-    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.position = prev.position;
+      document.body.style.top = prev.top;
+      document.body.style.width = prev.width;
+      document.body.style.overflow = prev.overflow;
+      window.scrollTo(0, scrollY);
+    };
   }, [onClose]);
 
   const embed = (times?.masjidalEmbed || "").trim();
@@ -2228,11 +2249,22 @@ function MasjidalPopup({ times, onClose }) {
   return (
     <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,14,.62)",
-        backdropFilter: "blur(4px)", display: "grid", placeItems: "center", padding: 20 }}>
+        backdropFilter: "blur(4px)",
+        // The overlay itself scrolls and aligns the popup to the top, so the
+        // header (with the close button) is always reachable — even on short
+        // screens or when the widget iframe is tall. Centering a too-tall
+        // dialog used to push the X off-screen with body scroll locked,
+        // trapping the user. overscrollBehavior stops scroll chaining back
+        // to the (locked) page.
+        overflowY: "auto", overscrollBehavior: "contain",
+        display: "flex", justifyContent: "center", alignItems: "flex-start",
+        padding: "max(20px, 5vh) 16px" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
-        maxHeight: "88vh", overflow: "hidden", position: "relative", padding: 0 }}>
+        overflow: "hidden", position: "relative", padding: 0, margin: "auto" }}>
+        {/* sticky header so the close button stays put even if the body is tall */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+          padding: "14px 18px", borderBottom: "1px solid var(--border)",
+          position: "sticky", top: 0, background: "var(--surface)", zIndex: 1 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
             <Clock size={17} color="var(--accent)" /> Prayer Times
           </div>
