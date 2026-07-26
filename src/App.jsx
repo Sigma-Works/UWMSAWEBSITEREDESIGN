@@ -1145,6 +1145,11 @@ const seed = {
     // there's one canonical place for it, editable from the "New here?"
     // admin tab.
     href: "https://docs.google.com/document/d/16K_gyLqsaIWM-s6BXqNTarokx8q9srlzK3433G9VFZ0/edit?usp=sharing",
+    // Second guide button — "Guide to being a Muslim at UW". Points to the
+    // same canonical doc by default; edit label/URL from the "New here?"
+    // admin tab if it should link somewhere different.
+    linkLabel2: "Guide to being a Muslim at UW",
+    href2: "https://docs.google.com/document/d/16K_gyLqsaIWM-s6BXqNTarokx8q9srlzK3433G9VFZ0/edit?usp=sharing",
   },
   // ── Instagram — admin pastes individual post URLs (same pattern as the
   // photo gallery); each renders via Instagram's own oEmbed widget, no API
@@ -1293,7 +1298,7 @@ function mergeContent(base, saved) {
   const out = { ...base, ...saved };
   for (const key of ["hero", "sections", "prayerTimes", "events", "about",
                      "islamicHouse", "contact", "donate", "eventsExtra",
-                     "bar", "mailing"]) {
+                     "bar", "mailing", "newHere", "instagram"]) {
     if (base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
       const savedVal = saved?.[key];
       if (savedVal && typeof savedVal === "object" && !Array.isArray(savedVal)) {
@@ -1416,7 +1421,9 @@ export default function App() {
     return fallback;
   };
   const [motionOff, setMotionOff] = useState(() => boolPref("msa-motion-off", false));
-  const [glowOff, setGlowOff] = useState(() => boolPref("msa-glow-off", false));
+  // Rosary glow starts OFF by default (glowOff = true) unless the visitor
+  // has explicitly turned it on before (saved pref wins).
+  const [glowOff, setGlowOff] = useState(() => boolPref("msa-glow-off", true));
   const [rippleOff, setRippleOff] = useState(() => boolPref("msa-ripple-off", false));
   useEffect(() => { try { localStorage.setItem("msa-motion-off", motionOff ? "on" : "off"); } catch {} }, [motionOff]);
   useEffect(() => { try { localStorage.setItem("msa-glow-off", glowOff ? "on" : "off"); } catch {} }, [glowOff]);
@@ -2784,7 +2791,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
         </div>
 
         <div ref={stageRef} style={{ maxWidth: 960, margin: "0 auto", position: "relative", zIndex: 2,
-          textAlign: "center", paddingBottom: 56 }}>
+          textAlign: "center", paddingBottom: 24 }}>
 
           {/* Spacer — the logo above is absolutely positioned (so it can be
               pinned to the rosary wheel's center), so this holds open the
@@ -3583,7 +3590,7 @@ function Gallery({ items }) {
            gap), and instead keeping the *wrap* short (140vh — only ~40vh
            of actual scroll runway past the pinned 100vh) so there's
            barely any dead scroll once the pin releases either. */
-        .carousel-wrap { position: relative; min-height: 140vh; }
+        .carousel-wrap { position: relative; min-height: 112vh; }
         .carousel-sticky {
           position: sticky; top: 0; min-height: 100vh; width: 100%;
           display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -4572,12 +4579,12 @@ function LazyQuadTree({ reduced }) {
       background: `radial-gradient(ellipse, ${GOLD}22 0%, transparent 70%)` }} />
   );
   return (
-    <div ref={ref} style={{ position: "relative", minHeight: 380, display: "flex",
+    <div ref={ref} style={{ position: "relative", minHeight: 320, display: "flex",
       alignItems: "flex-end", justifyContent: "center" }}>
       {!near && glow}
       {near && (
-        <React.Suspense fallback={<div style={{ position: "relative", height: 380, width: "100%" }}>{glow}</div>}>
-          <QuadTree reduced={reduced} height={380}
+        <React.Suspense fallback={<div style={{ position: "relative", height: 320, width: "100%" }}>{glow}</div>}>
+          <QuadTree reduced={reduced} height={320}
             accent={PINK} bark="#6b5545" gold={GOLD}
             petalColors={[PINK, "#e8c4d4", MAUVE]} />
         </React.Suspense>
@@ -4595,7 +4602,7 @@ function QuadSection({ data }) {
   const copy = data?.sections?.quad || seed.sections.quad;
   return (
     <section id="quad" className="grain vignette" style={{ position: "relative", overflow: "hidden",
-      background: GRAD_DEEP, color: "#fff", padding: "96px 20px 0" }}>
+      background: GRAD_DEEP, color: "#fff", padding: "72px 20px 0" }}>
       <AmbientGlow subtle />
       <div aria-hidden="true" style={{ position: "absolute", top: "-14%", left: "-6%",
         pointerEvents: "none", zIndex: 0 }}>
@@ -5192,6 +5199,18 @@ function NewHereSection({ data, onNav }) {
                 fontWeight: 700, fontSize: 15, color: "#2c2418",
                 background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)` }}>
               <BookOpen size={17} /> {nh.linkLabel || "Read the guide"}
+            </a>
+          </Reveal>
+        )}
+        {/* Second guide button — "Guide to being a Muslim at UW". */}
+        {nh.href2 && (
+          <Reveal variant="rise" distance={20} delay={40}>
+            <a href={safeHref(nh.href2)} target="_blank" rel="noopener noreferrer" className="btn lift"
+              style={{ display: "inline-flex", alignItems: "center", gap: 9,
+                padding: "13px 24px", borderRadius: 12, textDecoration: "none",
+                fontWeight: 700, fontSize: 15, color: "#2c2418",
+                background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)` }}>
+              <BookOpen size={17} /> {nh.linkLabel2 || "Read the guide"}
             </a>
           </Reveal>
         )}
@@ -6242,6 +6261,19 @@ function Editor({ tab, data, setData }) {
         <Field label="Link URL (e.g. the Muslim Student Guide)">
           <input style={inp} value={nh.href || ""} placeholder="https://…"
             onChange={(e) => setNh({ href: e.target.value })} />
+        </Field>
+
+        <div style={{ height: 1, background: "var(--border)", margin: "18px 0" }} />
+        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Second button (e.g. "Guide to being a Muslim at UW"). Leave the URL blank to hide it.
+        </p>
+        <Field label="Second button label">
+          <input style={inp} value={nh.linkLabel2 || ""}
+            onChange={(e) => setNh({ linkLabel2: e.target.value })} />
+        </Field>
+        <Field label="Second link URL">
+          <input style={inp} value={nh.href2 || ""} placeholder="https://…"
+            onChange={(e) => setNh({ href2: e.target.value })} />
         </Field>
       </Section>
     );
