@@ -17,7 +17,7 @@ Instagram, Facebook, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
   Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Search,
-  Settings, Camera
+  Settings, Camera, ArrowUp, ArrowDown
 } from "lucide-react";
 
 /* ============================================================
@@ -60,11 +60,24 @@ const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-
 // site, i.e. a link that looks fine in the admin panel but is broken on the
 // live site. This adds "https://" onto anything that isn't already an
 // absolute URL, a mailto:/tel: link, or an in-page "#anchor".
+// Schemes an admin-entered link is actually allowed to use. Anything else
+// with an explicit "scheme:" prefix (javascript:, data:, vbscript:, file:,
+// etc.) gets neutralized to "#" instead of being handed to an <a href> —
+// those are the classic stored-XSS vectors when free-text URL fields (board
+// member links, sponsor URLs, prayer-space map links, …) get rendered back
+// out as real hrefs. This doesn't require a login to exploit in itself, but
+// it closes off the easiest version of "an admin account gets phished/
+// compromised, then used to plant a javascript: link that fires for every
+// visitor" — worth doing even though only admins can edit this content.
+const SAFE_HREF_SCHEMES = /^(https?|mailto|tel):/i;
 function safeHref(url) {
   if (!url) return url;
   const trimmed = String(url).trim();
   if (!trimmed) return trimmed;
-  if (/^([a-z][a-z0-9+.-]*:|#)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("#")) return trimmed;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return SAFE_HREF_SCHEMES.test(trimmed) ? trimmed : "#";
+  }
   return `https://${trimmed}`;
 }
 
@@ -437,7 +450,15 @@ function useEnclosingBox(sectionRef, startRef, endRef, widthRefs, padding = 36) 
       const sBox = section.getBoundingClientRect();
       const aBox = start.getBoundingClientRect();
       const bBox = end.getBoundingClientRect();
-      const top = aBox.top - sBox.top - padding;
+      // Clamp to 0: the section has overflow:hidden, so a negative top
+      // (which happens whenever the rosette sits closer to the section's
+      // top edge than `padding`) used to push the arch's peak above the
+      // section's own boundary and get clipped off — "arch not fully
+      // visible" at the top. Clamping keeps the box fully inside the
+      // section while leaving `bottom` (and therefore where the arch's
+      // base lands) untouched.
+      const rawTop = aBox.top - sBox.top - padding;
+      const top = Math.max(rawTop, 0);
       const bottom = bBox.bottom - sBox.top + padding;
       let width = 0;
       widthRefs.forEach((r) => {
@@ -469,6 +490,44 @@ function useInView({ threshold = 0.15, rootMargin = "0px 0px -10% 0px", once = t
     return () => obs.disconnect();
   }, [threshold, rootMargin, once]);
   return [ref, inView];
+}
+
+// Attaches touch-swipe navigation to any carousel/slideshow container.
+// Pure touch events (not pointer events) on purpose — this only fires on
+// actual touchscreens, so it can't interfere with mouse-driven interactions
+// a component already has (e.g. the Moments carousel's cursor-tilt effect,
+// which listens for pointermove/pointerleave). A swipe only counts once the
+// horizontal drag clears `threshold` px AND is clearly more horizontal than
+// vertical, so a normal vertical scroll over the carousel doesn't
+// accidentally trigger a page change.
+function useSwipe(ref, { onLeft, onRight, threshold = 40, enabled = true } = {}) {
+  const onLeftRef = useRef(onLeft), onRightRef = useRef(onRight);
+  onLeftRef.current = onLeft; onRightRef.current = onRight;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    let startX = 0, startY = 0, tracking = false;
+    const onStart = (e) => {
+      const t = e.touches?.[0]; if (!t) return;
+      startX = t.clientX; startY = t.clientY; tracking = true;
+    };
+    const onEnd = (e) => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches?.[0]; if (!t) return;
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        if (dx < 0) onLeftRef.current?.(); else onRightRef.current?.();
+      }
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchcancel", () => { tracking = false; }, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchend", onEnd);
+    };
+  }, [ref, threshold, enabled]);
 }
 
 /* Reveal — the workhorse entrance animation.
@@ -578,7 +637,10 @@ function inlineMd(text, keyPrefix = "m") {
     } else {
       const close = tok.indexOf("](");
       const label = tok.slice(1, close);
-      const href = tok.slice(close + 2, -1);
+      // Same scheme allowlist as every other admin-entered URL in the
+      // site (safeHref) — markdown links were the one place a raw
+      // javascript:/data: href could still slip through untouched.
+      const href = safeHref(tok.slice(close + 2, -1));
       const external = /^https?:\/\//i.test(href);
       nodes.push(
         <a key={`${keyPrefix}-a${i++}`} href={href}
@@ -1143,11 +1205,16 @@ const seed = {
     hours: "Open for all five daily prayers · Jummah every Friday",
     body: "The Islamic House is the heart of Muslim student life at UW. It hosts daily congregational prayers, Friday Jummah, Ramadan iftars and taraweeh, and community gatherings all year round. MSA works hand in hand with the House — many of our events happen here.\n\nEveryone is welcome, whether you're coming for prayer, for iftar, or just to find your feet on campus.",
     donateUrl: "https://www.zeffy.com/en-US/donation-form/0b12beb3-2da5-4c6b-87b9-cfc84cf47e6a",
-    // A future/renovation photo of the building, shown above the "Visit"
-    // card — separate from the `photos` gallery below since it's meant to
-    // be a single featured image, not a grid entry. Empty by default;
-    // admins add it from the Islamic House tab.
+    // Future/renovation photo(s) of the building, shown above the "Visit"
+    // card as a small slideshow — separate from the `photos` gallery below
+    // since it's meant to be one featured slot, not a grid entry. Empty by
+    // default; admins add photos from the Islamic House tab.
+    // `futureImage` (singular) is the old single-photo field, kept around
+    // so a site that already had one saved doesn't lose it — see the
+    // migration fallback in IslamicHouseSection, which folds it into
+    // `futureImages` as the first slide if that array is still empty.
     futureImage: "",
+    futureImages: [],
     features: [
       { id: 1, title: "Daily prayers", text: "All five prayers in congregation, every day." },
       { id: 2, title: "Jummah", text: "Two khutbahs each Friday — check the prayer section for times." },
@@ -1237,11 +1304,19 @@ const seed = {
     { id: 5, name: "Ummah Foods", logo: "" },
     { id: 6, name: "Crescent Realty", logo: "" },
   ],
+  // mapUrl defaults to a Google Maps search for the building name (not a
+  // pinned address — nobody's verified exact coordinates for these rooms)
+  // so "Open in Maps" is useful out of the box; admins can overwrite with
+  // an exact link any time from the Prayer spaces tab.
   prayerSpaces: [
-    { id: 1, name: "HUB Reflection Room", loc: "Husky Union Building, Room 145", note: "Open during building hours · wudu station nearby" },
-    { id: 2, name: "Islamic House", loc: "Near NE 45th St", note: "Full masjid · all five daily prayers" },
-    { id: 3, name: "Odegaard Quiet Room", loc: "Odegaard Library, Ground Floor", note: "Quiet reflection · prayer mats available" },
-    { id: 4, name: "Engineering Prayer Space", loc: "ECE Building", note: "Reservable · check MSA Discord for access" },
+    { id: 1, name: "HUB Reflection Room", loc: "Husky Union Building, Room 145", note: "Open during building hours · wudu station nearby",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Husky+Union+Building+University+of+Washington" },
+    { id: 2, name: "Islamic House", loc: "Near NE 45th St", note: "Full masjid · all five daily prayers",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Islamic+House+University+of+Washington" },
+    { id: 3, name: "Odegaard Quiet Room", loc: "Odegaard Library, Ground Floor", note: "Quiet reflection · prayer mats available",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Odegaard+Undergraduate+Library+University+of+Washington" },
+    { id: 4, name: "Engineering Prayer Space", loc: "ECE Building", note: "Reservable · check MSA Discord for access",
+      mapUrl: "https://www.google.com/maps/search/?api=1&query=Paul+Allen+Center+University+of+Washington" },
   ],
   prayerTimes: {
     // ── Masjidal live widget ──────────────────────────────────────────────
@@ -1597,7 +1672,13 @@ export default function App() {
       <HeroCurtain progress={loadProgress} onDone={() => setCurtainDone(true)} />
       {petals && <SakuraWind dark={dark} />}
       <AnnouncementBar bar={data.bar} onNav={scrollTo} />
-      <Nav active={active} onNav={scrollTo} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
+      {/* Nav highlights by page ROUTE ("/", "/about", …), not by the
+          scroll-spy section id — `active` holds section ids (e.g. "home",
+          "prayer") which never match a NAV item's `route`, so the old
+          `active={active}` wiring meant the current-page indicator could
+          never actually light up. `route` always holds the current page
+          path, so that's what Nav needs for aria-current/highlighting. */}
+      <Nav active={route} onNav={scrollTo} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
            onAdmin={() => setAdminOpen(true)} isAdmin={isAdmin}
            dark={dark} onToggleDark={() => setDark((d) => !d)}
            petals={petals} onTogglePetals={() => setPetals((p) => !p)}
@@ -1768,6 +1849,32 @@ function StyleTag() {
         transition: left ${DUR.fast}ms ${EASE.out}, right ${DUR.fast}ms ${EASE.out};
       }
       .navlink:hover::after { left: 14px; right: 14px; }
+
+      /* ── Shiny sweep text — a bright purple highlight sweeps through the
+         gold eyebrow labels on an endless loop (section kickers like "OUR
+         HOME ON CAMPUS"). GPU-cheap: only background-position animates.
+         Reduced-motion users never get this class in the first place (see
+         Eyebrow), so there's no separate override needed here. ── */
+      .shiny-text {
+        /* --shiny-base defaults to the gold used on eyebrow labels;
+           callers (e.g. the white hero headline) override it inline via
+           style={{ "--shiny-base": "#fff" }} so the same sweep works on
+           any base color without a second copy of this rule. */
+        background-image: linear-gradient(100deg,
+          var(--shiny-base, ${GOLD}) 35%, ${NEON_PURPLE} 50%, var(--shiny-base, ${GOLD}) 65%);
+        background-size: 240% 100%;
+        background-position: 200% 0;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: shineSweep 3.2s ${EASE.inOut} infinite;
+        animation-delay: 1.1s;
+      }
+      @keyframes shineSweep {
+        0%   { background-position: 200% 0; }
+        55%  { background-position: -60% 0; }
+        100% { background-position: -60% 0; }
+      }
 
       /* ── Ambient background glow (very slow, very soft) ─────────────── */
       @keyframes glowDrift {
@@ -2295,8 +2402,13 @@ function Eyebrow({ children }) {
         transition: reduced ? "none"
           : `opacity ${DUR.base}ms ${EASE.out}, transform ${DUR.slow}ms ${EASE.spring}`,
       }}><Star8 size={16} /></span>
-      <span style={{ textTransform: "uppercase", letterSpacing: "2px", fontSize: 12.5,
-        fontWeight: 700, color: GOLD,
+      {/* shiny-text sweeps a bright purple highlight through the gold
+          label on a loop — purely decorative, so it's applied via a class
+          (not inline color) so prefers-reduced-motion users, who get the
+          animation frozen by the global media query above, still land on
+          a normal solid-looking label rather than a half-swept gradient. */}
+      <span className={reduced ? "" : "shiny-text"} style={{ textTransform: "uppercase", letterSpacing: "2px", fontSize: 12.5,
+        fontWeight: 700, color: reduced ? GOLD : undefined,
         opacity: show ? 1 : 0,
         transform: show ? "translate3d(0,0,0)" : "translate3d(-10px,0,0)",
         transition: reduced ? "none"
@@ -2736,9 +2848,15 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
               {data.hero.kicker ?? seed.hero.kicker}
             </span>
           </div>
-          <h1 style={{ margin: 0, color: "#fff", fontWeight: 800,
+          {/* Shiny sweep on the main headline too, not just the eyebrow
+              labels — white base so it still reads bright at rest, with
+              the same purple highlight passing through it on a loop.
+              Falls back to plain white for reduced-motion visitors. */}
+          <h1 className={reduced ? "" : "shiny-text"}
+            style={{ margin: 0, color: reduced ? "#fff" : undefined, fontWeight: 800,
             fontSize: "clamp(34px,6vw,68px)", lineHeight: 1.05,
-            textShadow: "0 2px 30px rgba(0,0,0,.4)" }}>
+            "--shiny-base": "#fff",
+            filter: "drop-shadow(0 2px 30px rgba(0,0,0,.4))" }}>
             {data.hero.title ?? seed.hero.title}
           </h1>
           <p style={{ marginTop: 20, color: "rgba(255,255,255,.86)",
@@ -2783,7 +2901,15 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             bonus, the arch below (which measures this wrapper's real
             width) now hugs it correctly on mobile too instead of sizing
             itself for the old fixed 560px. */}
-        <div ref={rosetteWrapRef} style={{ position: "absolute", top: "5%", left: "50%",
+        {/* top uses max(140px, 5%) instead of a bare 5% — on a shorter
+            section (fewer announcements) 5% alone could land at well
+            under 56px (the padding useEnclosingBox pads the arch's box
+            by), pushing the arch's measured top negative and clipping its
+            peak against this section's own overflow:hidden edge, and
+            visually reading as if it bled into the cherry-blossom hero
+            above. The 140px floor guarantees real breathing room under
+            the sticky nav no matter how short the section is. */}
+        <div ref={rosetteWrapRef} style={{ position: "absolute", top: "max(140px, 5%)", left: "50%",
           width: "clamp(230px, 52vw, 560px)", height: "clamp(230px, 52vw, 560px)",
           marginLeft: "calc(clamp(230px, 52vw, 560px) / -2)",
           pointerEvents: "none", zIndex: 0 }}>
@@ -2814,7 +2940,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             on separate elements — same reason as TiltWrap — otherwise the
             animation's own `transform` write would knock the mark off its
             centered position. ── */}
-        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 152px)",
+        <div style={{ position: "absolute", left: "50%", top: "calc(max(140px, 5%) + 152px)",
           transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
           <div className="hero-logo-mark" style={{
             position: "relative", opacity: 0,
@@ -2941,8 +3067,14 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
           </div>
         </div>
         <ScrollCue onClick={() => onNav("moments")} />
-        {/* girih band along the base of the hero */}
-        <div style={{ position: "relative" }}>
+        {/* girih band along the base of the hero — marginTop gives it
+            extra clearance so it doesn't visually collide with the arch's
+            base line. The arch is absolutely positioned (it doesn't push
+            this flow content down on its own) and extends `padding` (56px)
+            below the announcement cards, while the cards' wrapper only has
+            24px of paddingBottom — without this gap the arch's bottom edge
+            ran a good ~30px into the band below it. */}
+        <div style={{ position: "relative", marginTop: 56 }}>
           <GirihBand color="rgba(183,165,122,.45)" height={54} opacity={1} unit={54} />
         </div>
         <style>{`
@@ -3284,6 +3416,12 @@ function PatternField() {
    you scroll" is here. */
 function Gallery({ items }) {
   const reduced = useReducedMotion();
+  // Only used for the "Turn on animations" escape hatch in the
+  // reduced-motion fallback below — lets someone who flipped the site's
+  // own Settings > Reduce motion toggle (it persists in localStorage, so
+  // it's easy to forget it's on) get the 3D carousel back with one click,
+  // without touching anyone whose *OS* has reduced motion turned on.
+  const { motionOff, setMotionOff } = useMotionPrefs();
   const wrapRef = useRef(null);
   const stickyRef = useRef(null);
   const sceneRef = useRef(null);
@@ -3374,6 +3512,22 @@ function Gallery({ items }) {
     };
     const onPointerLeave = () => { tiltXTarget = 0; tiltYTarget = 0; startLoop(); };
 
+    // Touch swipe — steps one card per swipe, same as the arrow buttons.
+    // Pure touch events so it never fights the pointermove tilt above
+    // (that's mouse/hover-only on canHover devices).
+    let touchStartX = 0, touchStartY = 0, touchTracking = false;
+    const onTouchStart = (e) => {
+      const t = e.touches?.[0]; if (!t) return;
+      touchStartX = t.clientX; touchStartY = t.clientY; touchTracking = true;
+    };
+    const onTouchEnd = (e) => {
+      if (!touchTracking) return;
+      touchTracking = false;
+      const t = e.changedTouches?.[0]; if (!t) return;
+      const dx = t.clientX - touchStartX, dy = t.clientY - touchStartY;
+      if (n > 1 && Math.abs(dx) >= 36 && Math.abs(dx) > Math.abs(dy) * 1.3) rotate(dx < 0 ? 1 : -1);
+    };
+
     const startLoop = () => {
       if (raf || !inView || document.hidden) return;
       raf = requestAnimationFrame(tick);
@@ -3432,6 +3586,8 @@ function Gallery({ items }) {
       scene.addEventListener("pointermove", onPointerMove);
       scene.addEventListener("pointerleave", onPointerLeave);
     }
+    scene.addEventListener("touchstart", onTouchStart, { passive: true });
+    scene.addEventListener("touchend", onTouchEnd, { passive: true });
     const onVisibility = () => { if (!document.hidden) startLoop(); };
     document.addEventListener("visibilitychange", onVisibility);
 
@@ -3445,6 +3601,8 @@ function Gallery({ items }) {
         scene.removeEventListener("pointermove", onPointerMove);
         scene.removeEventListener("pointerleave", onPointerLeave);
       }
+      scene.removeEventListener("touchstart", onTouchStart);
+      scene.removeEventListener("touchend", onTouchEnd);
       document.removeEventListener("visibilitychange", onVisibility);
       rotateRef.current = () => {};
     };
@@ -3467,17 +3625,36 @@ function Gallery({ items }) {
   // fully visible immediately, no spinning ring at all.
   if (reduced) {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
-        gap: "clamp(14px,2.6vw,26px)" }}>
-        {list.map((it, i) => (
-          <div key={it.id ?? i} style={{ borderRadius: 16,
-            overflow: "hidden", aspectRatio: "4 / 3", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
-            {it.img
-              ? <img src={it.img} alt={it.caption || ""} loading="lazy"
-                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-              : <div style={{ width: "100%", height: "100%", background: grad(i) }} />}
+      <div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
+          gap: "clamp(14px,2.6vw,26px)" }}>
+          {list.map((it, i) => (
+            <div key={it.id ?? i} style={{ borderRadius: 16,
+              overflow: "hidden", aspectRatio: "4 / 3", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
+              {it.img
+                ? <img src={it.img} alt={it.caption || ""} loading="lazy"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                : <div style={{ width: "100%", height: "100%", background: grad(i) }} />}
+            </div>
+          ))}
+        </div>
+        {/* Only shown when THIS SITE'S OWN "Reduce motion" toggle (Settings
+            menu) is what's causing the grid — never for a visitor whose OS
+            has reduced motion turned on, since that's an accessibility
+            choice this site shouldn't second-guess. The in-site toggle is
+            easy to flip on while poking around Settings and then forget
+            about, since it persists in localStorage indefinitely. */}
+        {motionOff && (
+          <div style={{ marginTop: 16, textAlign: "center" }}>
+            <button onClick={() => setMotionOff(false)} className="btn"
+              style={{ display: "inline-flex", alignItems: "center", gap: 7,
+                padding: "10px 18px", borderRadius: 999, border: "1px solid var(--border-strong)",
+                background: "var(--surface)", color: "var(--accent)", fontWeight: 700,
+                fontSize: 13.5, cursor: "pointer", fontFamily: "inherit" }}>
+              <Sparkles size={14} /> Reduce motion is on for this site — turn it off to see the photo carousel
+            </button>
           </div>
-        ))}
+        )}
       </div>
     );
   }
@@ -3562,6 +3739,7 @@ function Gallery({ items }) {
           position: relative; flex: 1 1 auto; min-width: 0; max-width: 1000px;
           height: clamp(300px, 34vw, 480px);
           transform-style: preserve-3d; will-change: transform;
+          touch-action: pan-y;
         }
         .carousel-ground {
           position: absolute; left: 50%; top: 50%; width: 68%; height: 26%;
@@ -3668,6 +3846,13 @@ function PrayerSection({ data }) {
                 <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>{s.name}</h3>
                 <div style={{ color: "var(--text-muted)", fontSize: 14.5, marginBottom: 6 }}>{s.loc}</div>
                 <div style={{ color: "var(--text-faint)", fontSize: 13.5 }}>{s.note}</div>
+                {s.mapUrl && (
+                  <a href={safeHref(s.mapUrl)} target="_blank" rel="noopener noreferrer"
+                    style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5,
+                      fontSize: 12.5, fontWeight: 700, color: "var(--accent)", textDecoration: "none" }}>
+                    <MapPin size={12} /> Open in Maps
+                  </a>
+                )}
               </div>
             </div>
             </Reveal>
@@ -4742,16 +4927,34 @@ function DonateSection({ data }) {
 /* ---------- ISLAMIC HOUSE ---------- */
 function IslamicHouseSection({ data }) {
   const h = data.islamicHouse || seed.islamicHouse;
+  // Index into h.photos currently open in the lightbox, or null when closed.
+  const [lightbox, setLightbox] = useState(null);
+  const photos = h.photos || [];
+  const navLightbox = (dir) => setLightbox((i) => (i === null ? null : (i + dir + photos.length) % photos.length));
+  // futureImages is the new multi-photo slideshow field. h.futureImage
+  // (singular) was the old single-photo field it replaces — if a site
+  // already had one of those saved and hasn't added anything to the new
+  // array yet, show it as the slideshow's one slide instead of the empty
+  // placeholder, so upgrading doesn't lose an admin's existing photo.
+  const futureImages = (h.futureImages && h.futureImages.length)
+    ? h.futureImages
+    : (h.futureImage ? [{ id: "legacy", img: h.futureImage, caption: "" }] : []);
   return (
     <Band id="islamic-house" lattice rosettes="both" decor="right" light lightTone="gold" lightAt="bottom-right">
-      <SectionCopy data={data} sectionKey="islamicHouse" />
       {/* tasbih swaying quietly in the margin */}
       <Parallax speed={0.16} style={{ top: 90, right: "2%" }}>
         <Tasbih height={230} opacity={0.32} color="var(--rosette)" />
       </Parallax>
+      {/* SectionCopy (eyebrow/title/intro) used to sit full-width above
+          this grid, which pushed the "Visit Islamic House" card well
+          below the heading instead of alongside it. Moving it inside the
+          left column means both columns now start at the same row (grid
+          has alignItems:"start"), so the card rides up flush with the
+          eyebrow/title instead of floating lower next to the body copy. */}
       <div style={{ display: "grid", gridTemplateColumns: "1.15fr .85fr", gap: 26,
         alignItems: "start" }} className="house-grid">
         <div>
+          <SectionCopy data={data} sectionKey="islamicHouse" />
           {h.body && (
             <Reveal variant="up" distance={18}>
               <div style={{ color: "var(--text-muted)", fontSize: 15.5, lineHeight: 1.75,
@@ -4832,16 +5035,15 @@ function IslamicHouseSection({ data }) {
             </div>
           </Reveal>
 
-          {/* Building photo — real image once an admin adds one, else a quiet
-              placeholder so the layout doesn't jump. */}
+          {/* Building photo slot — same position/size (right column,
+              second item, 4:3 box) as before, now a small slideshow when
+              there's more than one photo. A single photo (or the legacy
+              futureImage) renders exactly as it did previously, with no
+              arrows; zero photos keeps the original "coming soon"
+              placeholder so the layout never jumps. */}
           <Reveal variant="right" distance={26} delay={140} duration={DUR.slow}>
-            {h.futureImage ? (
-              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
-                aspectRatio: "4 / 3" }}>
-                <img src={h.futureImage} alt="Future Islamic House building" loading="lazy"
-                  decoding="async"
-                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-              </div>
+            {futureImages.length > 0 ? (
+              <ImageSlideshow images={futureImages} alt="Future Islamic House building" />
             ) : (
               <div style={{ ...card, aspectRatio: "4 / 3", display: "grid", placeItems: "center",
                 gap: 8, textAlign: "center", padding: 20,
@@ -4855,26 +5057,186 @@ function IslamicHouseSection({ data }) {
         </div>
       </div>
 
-      {/* Photos */}
-      {(h.photos || []).length > 0 && (
+      {/* Photos — click any thumbnail to browse the full set in a
+          lightbox with prev/next arrows (PhotoLightbox below). Admins can
+          add as many as they like from the Islamic House tab; there's no
+          cap on the array, the grid just wraps. */}
+      {photos.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))",
           gap: 14, marginTop: 26 }}>
-          {h.photos.map((p, n) => (
+          {photos.map((p, n) => (
             <Reveal key={p.id ?? n} delay={n * 70} variant="scale" distance={20}>
-              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
-                aspectRatio: "4 / 3" }}>
+              <button type="button" onClick={() => setLightbox(n)} className="zoomable"
+                aria-label={p.caption ? `View photo: ${p.caption}` : `View photo ${n + 1} of ${photos.length}`}
+                style={{ ...card, padding: 0, overflow: "hidden", aspectRatio: "4 / 3",
+                  border: "none", cursor: "pointer", display: "block", width: "100%",
+                  font: "inherit", color: "inherit" }}>
                 {p.img
                   ? <img src={p.img} alt={p.caption || ""} loading="lazy"
                       style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                   : <div style={{ width: "100%", height: "100%",
                       background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }} />}
-              </div>
+              </button>
             </Reveal>
           ))}
         </div>
       )}
+      <PhotoLightbox photos={photos} index={lightbox} onClose={() => setLightbox(null)} onNav={navLightbox} />
       <style>{`@media (max-width:880px){.house-grid{grid-template-columns:1fr !important;}}`}</style>
     </Band>
+  );
+}
+
+/* Full-screen viewer for a photo array — prev/next arrow buttons plus
+   arrow-key and swipe-free keyboard navigation, Escape/backdrop to close.
+   Generic enough to reuse anywhere a plain photo array needs browsing
+   (currently just the Islamic House photos, which have no carousel of
+   their own the way the home page Moments gallery does). */
+/* Small inline slideshow for a single featured photo slot — same 4:3 card
+   box a lone image used to sit in, just with prev/next arrows and dot
+   indicators once there's more than one photo. Deliberately lighter than
+   PhotoLightbox (no fullscreen overlay, no keyboard/scroll locking) since
+   this lives inline in the page layout, not as a modal. */
+function ImageSlideshow({ images, alt }) {
+  const [i, setI] = useState(0);
+  const reduced = useReducedMotion();
+  const n = images.length;
+  const boxRef = useRef(null);
+  // Clamp if the array shrinks (e.g. an admin deletes the slide being shown).
+  useEffect(() => { if (i > n - 1) setI(Math.max(0, n - 1)); }, [n, i]);
+
+  const go = (dir) => setI((cur) => (cur + dir + n) % n);
+  const cur = images[i];
+  useSwipe(boxRef, { onLeft: () => go(1), onRight: () => go(-1), enabled: n > 1 });
+
+  return (
+    <div ref={boxRef} className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
+      aspectRatio: "4 / 3", position: "relative", touchAction: n > 1 ? "pan-y" : undefined }}>
+      {cur?.img
+        ? <img key={cur.id ?? i} src={cur.img} alt={cur.caption || alt} loading="lazy" decoding="async"
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+        : <div style={{ width: "100%", height: "100%",
+            background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }} />}
+
+      {n > 1 && (
+        <>
+          <button type="button" onClick={() => go(-1)} aria-label="Previous photo"
+            style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)",
+              width: 32, height: 32, borderRadius: "50%", border: "1px solid rgba(255,255,255,.35)",
+              background: "rgba(20,17,24,.55)", color: "#fff", display: "grid", placeItems: "center",
+              cursor: "pointer" }}>
+            <ChevronLeft size={17} />
+          </button>
+          <button type="button" onClick={() => go(1)} aria-label="Next photo"
+            style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+              width: 32, height: 32, borderRadius: "50%", border: "1px solid rgba(255,255,255,.35)",
+              background: "rgba(20,17,24,.55)", color: "#fff", display: "grid", placeItems: "center",
+              cursor: "pointer" }}>
+            <ChevronRight size={17} />
+          </button>
+          {/* dot indicators — also clickable, jump straight to a slide */}
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 10,
+            display: "flex", justifyContent: "center", gap: 6 }}>
+            {images.map((im, di) => (
+              <button key={im.id ?? di} type="button" onClick={() => setI(di)}
+                aria-label={`Go to photo ${di + 1}`} aria-current={di === i}
+                style={{ width: di === i ? 16 : 6, height: 6, borderRadius: 999, border: "none",
+                  padding: 0, cursor: "pointer", background: di === i ? "#fff" : "rgba(255,255,255,.45)",
+                  transition: reduced ? "none" : `width ${DUR.fast}ms ${EASE.out}` }} />
+            ))}
+          </div>
+        </>
+      )}
+      {cur?.caption && (
+        <div style={{ position: "absolute", left: 10, right: 10, top: 10, fontSize: 12,
+          fontWeight: 700, color: "#fff", textShadow: "0 1px 6px rgba(0,0,0,.6)" }}>
+          {cur.caption}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PhotoLightbox({ photos, index, onClose, onNav }) {
+  const overlayRef = useRef(null);
+  useEffect(() => {
+    if (index === null) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") onNav(-1);
+      else if (e.key === "ArrowRight") onNav(1);
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [index, onClose, onNav]);
+  // Swipe anywhere on the overlay to browse — hook has to be called
+  // unconditionally (before the index===null early return below), so it
+  // self-disables via `enabled` instead of being skipped.
+  useSwipe(overlayRef, {
+    onLeft: () => onNav(1), onRight: () => onNav(-1),
+    enabled: index !== null && photos.length > 1,
+  });
+
+  if (index === null) return null;
+  const p = photos[index];
+  if (!p) return null;
+
+  const arrowBtn = {
+    position: "absolute", top: "50%", transform: "translateY(-50%)",
+    width: 44, height: 44, borderRadius: "50%", border: "1px solid rgba(255,255,255,.28)",
+    background: "rgba(20,17,24,.72)", color: "#fff", display: "grid", placeItems: "center",
+    cursor: "pointer",
+  };
+
+  return (
+    <div ref={overlayRef} role="dialog" aria-modal="true" aria-label="Photo viewer" className="modalBg"
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,16,.88)",
+        backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20,
+        touchAction: "pan-y" }}>
+      <button onClick={onClose} aria-label="Close"
+        style={{ position: "absolute", top: 18, right: 18, width: 40, height: 40, borderRadius: "50%",
+          border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
+          display: "grid", placeItems: "center", cursor: "pointer" }}>
+        <X size={20} />
+      </button>
+      {photos.length > 1 && (
+        <button onClick={(e) => { e.stopPropagation(); onNav(-1); }} aria-label="Previous photo"
+          style={{ ...arrowBtn, left: 14 }}>
+          <ChevronLeft size={22} />
+        </button>
+      )}
+      <div onClick={(e) => e.stopPropagation()} className="modalIn"
+        style={{ maxWidth: "min(88vw, 900px)", maxHeight: "82vh", display: "grid", gap: 10 }}>
+        {p.img
+          ? <img src={p.img} alt={p.caption || ""} style={{ maxWidth: "100%", maxHeight: "72vh",
+              borderRadius: 14, boxShadow: "0 20px 60px rgba(0,0,0,.5)", objectFit: "contain",
+              display: "block", margin: "0 auto" }} />
+          : <div style={{ width: "min(88vw, 700px)", height: "60vh", borderRadius: 14,
+              background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }} />}
+        {p.caption && (
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,.85)", fontSize: 14.5, fontWeight: 600 }}>
+            {p.caption}
+          </div>
+        )}
+        {photos.length > 1 && (
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,.5)", fontSize: 12.5 }}>
+            {index + 1} / {photos.length}
+          </div>
+        )}
+      </div>
+      {photos.length > 1 && (
+        <button onClick={(e) => { e.stopPropagation(); onNav(1); }} aria-label="Next photo"
+          style={{ ...arrowBtn, right: 14 }}>
+          <ChevronRight size={22} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -4886,14 +5248,15 @@ function BoardSection({ data }) {
   const [tab, setTab] = useState("current");
   const [open, setOpen] = useState(null);   // id of expanded member
   const [page, setPage] = useState(0);
-  const [perPage, setPerPage] = useState(4);
+  const [perPage, setPerPage] = useState(5);
   const reduced = useReducedMotion();
+  const trackWrapRef = useRef(null);
 
   // How many cards fit at once — recalculated on resize.
   useEffect(() => {
     const calc = () => {
       const w = window.innerWidth;
-      setPerPage(w < 560 ? 1 : w < 860 ? 2 : w < 1120 ? 3 : 4);
+      setPerPage(w < 560 ? 1 : w < 860 ? 2 : w < 1120 ? 3 : 5);
     };
     calc();
     window.addEventListener("resize", calc, { passive: true });
@@ -4910,6 +5273,15 @@ function BoardSection({ data }) {
   const openMember = members.find((m) => m.id === open);
 
   const switchTab = (t) => { if (t !== tab) setTab(t); };
+
+  // Swipe left/right on touch devices pages the carousel the same way the
+  // arrow buttons below do — most useful at perPage:1 (phones), where each
+  // member gets their own "page" to swipe through.
+  useSwipe(trackWrapRef, {
+    onLeft: () => setPage((p) => (p + 1) % pages),
+    onRight: () => setPage((p) => (p - 1 + pages) % pages),
+    enabled: pages > 1,
+  });
 
   return (
     <Band id="board" alt lattice rosettes="right" decor="left" light lightTone="rose" lightAt="bottom-left">
@@ -4944,8 +5316,9 @@ function BoardSection({ data }) {
         </div>
       ) : (
         <div style={{ position: "relative" }}>
-          {/* Track — translated by page, so it revolves rather than reflowing */}
-          <div style={{ overflow: "hidden" }}>
+          {/* Track — translated by page, so it revolves rather than reflowing.
+              Ref is what useSwipe listens on for touch drag. */}
+          <div ref={trackWrapRef} style={{ overflow: "hidden", touchAction: "pan-y" }}>
             <div style={{ display: "flex",
               transform: `translate3d(-${page * 100}%, 0, 0)`,
               transition: reduced ? "none" : `transform ${DUR.slow}ms ${EASE.outSoft}` }}>
@@ -5169,7 +5542,8 @@ function NewHereSection({ data, onNav }) {
             after the hero, looking for exactly this next step. */}
         {onNav && (
           <Reveal variant="rise" distance={20} delay={80}>
-            <Magnetic><button className="btn lift" onClick={() => onNav("connect")}
+            {/* Get Involved -> Events page (the weekly/monthly calendar lives there). */}
+            <Magnetic><button className="btn lift" onClick={() => onNav("events")}
               style={{ ...btnPurple, padding: "13px 24px", borderRadius: 12, fontSize: 15 }}>
               Get Involved
             </button></Magnetic>
@@ -5177,7 +5551,8 @@ function NewHereSection({ data, onNav }) {
         )}
         {onNav && (
           <Reveal variant="rise" distance={20} delay={140}>
-            <button className="btn lift" onClick={() => onNav("moments")}
+            {/* Learn More -> About page. */}
+            <button className="btn lift" onClick={() => onNav("about")}
               style={{ padding: "13px 24px", borderRadius: 12, fontWeight: 700, fontSize: 15,
                 background: "transparent", color: "var(--text)", cursor: "pointer",
                 border: "1px solid var(--border-strong)", fontFamily: "inherit" }}>
@@ -5491,7 +5866,7 @@ function Footer({ onAdmin, data, onNav }) {
             gap: 16, flexWrap: "wrap", fontSize: 12.5 }}>
             <div>
               © {new Date().getFullYear()} Muslim Students Association at the University of
-              Washington. A registered UW Registered Student Organization.
+              Washington. A UW Registered Student Organization.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
               <a href={`mailto:${contact.email}`} className="footlink">{contact.email}</a>
@@ -5725,8 +6100,9 @@ function Editor({ tab, data, setData }) {
     return (
       <ListEditor title="Prayer spaces" items={data.prayerSpaces}
         onChange={(prayerSpaces) => up({ prayerSpaces })}
-        blank={{ name: "New space", loc: "Location", note: "" }}
-        fields={[["name", "Name"], ["loc", "Location"], ["note", "Note"]]} />
+        blank={{ name: "New space", loc: "Location", note: "", mapUrl: "" }}
+        fields={[["name", "Name"], ["loc", "Location"], ["note", "Note"],
+          ["mapUrl", "Google Maps link (optional)"]]} />
     );
 
   if (tab === "times") {
@@ -5891,7 +6267,12 @@ function Editor({ tab, data, setData }) {
           Photos upload to storage; the link is optional and opens when someone clicks the card.
           Move a member to “Previous” at the end of their term rather than deleting them.
         </p>
-        {groups.map(([status, label]) => (
+        {groups.map(([status, label]) => {
+          const groupIdxs = board.reduce((acc, m, idx) => {
+            if ((m.status || "current") === status) acc.push(idx);
+            return acc;
+          }, []);
+          return (
           <div key={status} style={{ marginBottom: 22 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
               marginBottom: 10 }}>
@@ -5906,9 +6287,16 @@ function Editor({ tab, data, setData }) {
                   textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
                   None yet</div>
               )}
-              {board.map((m, i) => (m.status || "current") !== status ? null : (
+              {/* Reorder within a group (Current / Previous) by swapping with the
+                  nearest neighbour that shares the same status — `i` below is
+                  the real index into the full `board` array, but `pos`/`groupIdxs`
+                  track this member's position within just its own group, since
+                  Current and Previous members are interleaved in the array. */}
+              {groupIdxs.map((i, pos) => {
+                const m = board[i];
+                return (
                 <div key={m.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-                  padding: 14, display: "grid", gap: 8, position: "relative" }}>
+                  padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
                   <ImageField label="Photo" value={m.img || ""} folder="board"
                     onChange={(url) => edit(i, { img: url })} />
                   <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
@@ -5943,14 +6331,23 @@ function Editor({ tab, data, setData }) {
                       <option value="previous">Previous</option>
                     </select>
                   </div>
-                  <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
-                    style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                    aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
+                  <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                    <button onClick={() => pos > 0 && setBoard(arraySwap(board, i, groupIdxs[pos - 1]))}
+                      disabled={pos === 0} style={pos === 0 ? moveBtnOff : moveBtn}
+                      aria-label={`Move ${m.name} up`}><ArrowUp size={14} /></button>
+                    <button onClick={() => pos < groupIdxs.length - 1 && setBoard(arraySwap(board, i, groupIdxs[pos + 1]))}
+                      disabled={pos === groupIdxs.length - 1} style={pos === groupIdxs.length - 1 ? moveBtnOff : moveBtn}
+                      aria-label={`Move ${m.name} down`}><ArrowDown size={14} /></button>
+                    <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
+                      style={delBtn} aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
-        ))}
+          );
+        })}
       </Section>
     );
   }
@@ -6133,6 +6530,16 @@ function Editor({ tab, data, setData }) {
     const photos = h.photos || [];
     const editF = (i, patch) => { const c = [...feats]; c[i] = { ...c[i], ...patch }; setH({ features: c }); };
     const editPh = (i, patch) => { const c = [...photos]; c[i] = { ...c[i], ...patch }; setH({ photos: c }); };
+    // Same legacy-migration read as the public section: once an admin
+    // touches this list at all, it's saved under futureImages going
+    // forward and the old singular futureImage field is just along for
+    // the ride (harmless, unused once futureImages is non-empty).
+    const futureImgs = (h.futureImages && h.futureImages.length)
+      ? h.futureImages
+      : (h.futureImage ? [{ id: "legacy", img: h.futureImage, caption: "" }] : []);
+    const editFI = (i, patch) => {
+      const c = [...futureImgs]; c[i] = { ...c[i], ...patch }; setH({ futureImages: c });
+    };
     return (
       <Section title="Islamic House">
         <Field label="Address"><input style={inp} value={h.address || ""}
@@ -6146,10 +6553,45 @@ function Editor({ tab, data, setData }) {
           onChange={(e) => setH({ body: e.target.value })} /></Field>
         <Field label="Donation URL"><input style={inp} value={h.donateUrl || ""}
           onChange={(e) => setH({ donateUrl: e.target.value })} /></Field>
-        <Field label="Future building photo (shown above the 'Visit' card — optional)">
-          <ImageField label="Future building photo" value={h.futureImage || ""} folder="house"
-            onChange={(url) => setH({ futureImage: url })} />
-        </Field>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          margin: "10px 0" }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
+            Future building photo(s)</h4>
+          <button onClick={() => setH({ futureImages: [...futureImgs, { id: Date.now(), img: "", caption: "" }] })}
+            style={miniBtn}><Plus size={14} /> Add</button>
+        </div>
+        <p style={{ margin: "-4px 0 12px", fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Shown above the "Visit" card. One photo shows as-is; add more and it
+          becomes a slideshow with arrows automatically — no extra setup needed.
+        </p>
+        {futureImgs.length === 0 && (
+          <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 8, marginBottom: 12,
+            textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
+            None yet — shows a "coming soon" placeholder on the site</div>
+        )}
+        <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
+          {futureImgs.map((p, i) => (
+            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
+              <ImageField label="Photo" value={p.img || ""} folder="house"
+                onChange={(url) => editFI(i, { img: url })} />
+              <div><label style={lbl}>Caption (optional)</label>
+                <input style={inpSm} value={p.caption || ""}
+                  onChange={(e) => editFI(i, { caption: e.target.value })} /></div>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button onClick={() => i > 0 && setH({ futureImages: arraySwap(futureImgs, i, i - 1) })}
+                  disabled={i === 0} style={i === 0 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo up"><ArrowUp size={14} /></button>
+                <button onClick={() => i < futureImgs.length - 1 && setH({ futureImages: arraySwap(futureImgs, i, i + 1) })}
+                  disabled={i === futureImgs.length - 1} style={i === futureImgs.length - 1 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo down"><ArrowDown size={14} /></button>
+                <button onClick={() => setH({ futureImages: futureImgs.filter((_, n) => n !== i) })}
+                  style={delBtn} aria-label="Delete photo"><Trash2 size={15} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
           margin: "10px 0" }}>
@@ -6183,15 +6625,22 @@ function Editor({ tab, data, setData }) {
         <div style={{ display: "grid", gap: 12 }}>
           {photos.map((p, i) => (
             <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
+              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
               <ImageField label="Photo" value={p.img || ""} folder="house"
                 onChange={(url) => editPh(i, { img: url })} />
               <div><label style={lbl}>Caption (optional)</label>
                 <input style={inpSm} value={p.caption || ""}
                   onChange={(e) => editPh(i, { caption: e.target.value })} /></div>
-              <button onClick={() => setH({ photos: photos.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete photo"><Trash2 size={15} /></button>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button onClick={() => i > 0 && setH({ photos: arraySwap(photos, i, i - 1) })}
+                  disabled={i === 0} style={i === 0 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo up"><ArrowUp size={14} /></button>
+                <button onClick={() => i < photos.length - 1 && setH({ photos: arraySwap(photos, i, i + 1) })}
+                  disabled={i === photos.length - 1} style={i === photos.length - 1 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo down"><ArrowDown size={14} /></button>
+                <button onClick={() => setH({ photos: photos.filter((_, n) => n !== i) })}
+                  style={delBtn} aria-label="Delete photo"><Trash2 size={15} /></button>
+              </div>
             </div>
           ))}
         </div>
@@ -6581,18 +7030,36 @@ function ImageField({ value, onChange, folder = "gallery", label = "Image" }) {
     </div>
   );
 }
+// Swaps items i and j (both indices into `items`, keys preserved) — the
+// building block for every "move up / move down" reorder control. Pure/
+// immutable so it composes cleanly with the various setState callbacks
+// each admin tab already uses.
+function arraySwap(items, i, j) {
+  if (i < 0 || j < 0 || i >= items.length || j >= items.length) return items;
+  const c = items.slice();
+  [c[i], c[j]] = [c[j], c[i]];
+  return c;
+}
+
+const moveBtn = { background: "var(--tint)", color: "var(--accent)", border: "none", borderRadius: 8,
+  width: 30, height: 30, display: "grid", placeItems: "center", cursor: "pointer" };
+const moveBtnOff = { ...moveBtn, opacity: 0.3, cursor: "default" };
+
 function ListEditor({ title, items, onChange, blank, fields }) {
   const add = () => onChange([...items, { id: Date.now(), ...blank }]);
   const del = (i) => onChange(items.filter((_, n) => n !== i));
   const edit = (i, key, val) => { const c = [...items]; c[i] = { ...c[i], [key]: val }; onChange(c); };
+  const move = (i, dir) => onChange(arraySwap(items, i, i + dir));
   return (
     <Section title={title}>
       <button className="btn" onClick={add} style={{ ...btnPurple, marginBottom: 16, display: "inline-flex",
         alignItems: "center", gap: 6 }}><Plus size={16} /> Add</button>
+      {/* Reorder with the arrow buttons instead of deleting and re-adding —
+          position on the live site follows this list's order directly. */}
       <div style={{ display: "grid", gap: 14 }}>
         {items.map((it, i) => (
           <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-            padding: 14, display: "grid", gap: 8, position: "relative" }}>
+            padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
             {fields.map(([key, lbl, kind]) => (
               kind === "image" ? (
                 <ImageField key={key} label={lbl} value={it[key] || ""}
@@ -6605,8 +7072,13 @@ function ListEditor({ title, items, onChange, blank, fields }) {
                 </div>
               )
             ))}
-            <button onClick={() => del(i)} style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-              aria-label="Delete"><Trash2 size={15} /></button>
+            <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+              <button onClick={() => i > 0 && move(i, -1)} disabled={i === 0}
+                style={i === 0 ? moveBtnOff : moveBtn} aria-label="Move up"><ArrowUp size={14} /></button>
+              <button onClick={() => i < items.length - 1 && move(i, 1)} disabled={i === items.length - 1}
+                style={i === items.length - 1 ? moveBtnOff : moveBtn} aria-label="Move down"><ArrowDown size={14} /></button>
+              <button onClick={() => del(i)} style={delBtn} aria-label="Delete"><Trash2 size={15} /></button>
+            </div>
           </div>
         ))}
       </div>
