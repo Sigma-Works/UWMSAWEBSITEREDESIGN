@@ -62,7 +62,15 @@ function pickSize() {
 
 export default function CanvasHeroSequence({
   reduced = false,
+  // Optional callback with scroll progress 0..1. Avoid wiring this to React
+  // state on a heavy parent — it fires every scroll tick and would re-render
+  // the whole subtree. Prefer `overlayRef` below for the title fade.
   onProgress,
+  // Optional ref to the overlaid hero-content wrapper. When provided, the
+  // component fades/translates it as the bloom scrubs by writing styles
+  // straight to the DOM node inside its existing rAF loop — no React
+  // re-render per scroll frame. This is the performant path for the title.
+  overlayRef,
   // How many viewport-heights of scroll the sequence spans. Taller = the
   // bloom scrubs more slowly and reads as more deliberate.
   scrollHeightVh = 320,
@@ -170,8 +178,17 @@ export default function CanvasHeroSequence({
       FRAME_COUNT - 1,
       Math.round(p * (FRAME_COUNT - 1))
     );
+    // Fade the overlaid title straight on the DOM node — no React state, so
+    // scrolling the hero doesn't re-render the (heavy) parent every tick.
+    const ov = overlayRef?.current;
+    if (ov) {
+      ov.style.opacity = String(Math.max(0, 1 - p * 2.4));
+      ov.style.transform = `translate3d(0, ${p * -40}px, 0)`;
+      const hint = ov.querySelector("[data-hero-hint]");
+      if (hint) hint.style.opacity = String(Math.max(0, 1 - p * 3));
+    }
     onProgress?.(p);
-  }, [onProgress]);
+  }, [onProgress, overlayRef]);
 
   /* ── Preload sequence (progressive, bounded concurrency) ─────────── */
   useEffect(() => {
