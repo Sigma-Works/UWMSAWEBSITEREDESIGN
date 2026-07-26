@@ -151,3 +151,48 @@ export async function listSubscribers() {
   if (error) return { ok: false, error: error.message };
   return { ok: true, rows: data || [] };
 }
+
+/* ── Admin activity log ────────────────────────────────────────────────
+   Records which admin saved changes and (roughly) what they touched, so the
+   team has an audit trail. Requires a table `admin_log`:
+
+     create table admin_log (
+       id          bigint generated always as identity primary key,
+       actor_email text,
+       summary     text,
+       created_at  timestamptz default now()
+     );
+     alter table admin_log enable row level security;
+     -- only signed-in admins can write and read the log:
+     create policy "admins insert log" on admin_log
+       for insert to authenticated with check (true);
+     create policy "admins read log" on admin_log
+       for select to authenticated using (true);
+
+   Writing to the log is best-effort: a failure here never blocks a content
+   save (the save already succeeded by the time we log).
+   ───────────────────────────────────────────────────────────────────── */
+export async function logAdminChange(summary) {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    const actor_email = user?.email || "unknown";
+    const { error } = await supabase
+      .from("admin_log")
+      .insert({ actor_email, summary: String(summary || "").slice(0, 500) });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || "log failed" };
+  }
+}
+
+// Admin-only: read the recent change history.
+export async function listAdminLog(limit = 100) {
+  const { data, error } = await supabase
+    .from("admin_log")
+    .select("actor_email,summary,created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, rows: data || [] };
+}
