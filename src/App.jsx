@@ -2185,8 +2185,19 @@ function getSeattleNowMinutes(date) {
 // publish a documented API or markup contract for this widget, so
 // anchoring on the visible "Fajr ... 3:46 AM" text is more likely to
 // survive a styling change on their end than matching specific classes
-// would be. Only takes the FIRST "PRAYER TIMINGS" block in the page
-// (today's), since the widget lists a full week.
+// would be.
+//
+// The page lists a full week, one block per day, but there's no need to
+// isolate "today's" block: today's is always first in document order, so
+// a plain (non-global) match against the whole page already lands on
+// today's occurrence of each prayer name — String.match() returns the
+// first hit. An earlier version tried to find where today's block "ends"
+// by locating the *second* occurrence of the heading text "PRAYER
+// TIMINGS" and slicing everything before it, which breaks in practice
+// because the page's own <title> tag ("Masjidal - Prayer timings") also
+// contains that phrase — throwing the occurrence count off by one and
+// slicing away the real table data instead of the days after it.
+// Matching directly against the full text sidesteps that fragility.
 function parseAthanPlusTimes(html) {
   const text = String(html)
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -2195,13 +2206,11 @@ function parseAthanPlusTimes(html) {
     .replace(/&nbsp;/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const secondHeading = text.toUpperCase().indexOf("PRAYER TIMINGS", text.toUpperCase().indexOf("PRAYER TIMINGS") + 1);
-  const todayText = secondHeading === -1 ? text : text.slice(0, secondHeading);
   const out = {};
   for (const name of PRAYER_ORDER) {
     // e.g. "Fajr 3:46 AM 4:30 AM" — the first time is the start (adhan);
     // the second (bold, "Iqamah") isn't what the countdown should track.
-    const m = todayText.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
+    const m = text.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
     if (m) out[name] = m[1].toUpperCase();
   }
   return out;
