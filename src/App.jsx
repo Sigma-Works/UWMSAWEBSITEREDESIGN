@@ -13,10 +13,10 @@ import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
 import { animate, createTimeline, stagger, utils } from "animejs";
 import {
   Menu, X, Heart, MapPin, Clock, Calendar, Users, BookOpen,
-  ShoppingBag, Instagram, Facebook, MessageCircle, Link2,
+Instagram, Facebook, MessageCircle, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
-  Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Info, Search,
+  Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Search,
   Settings, Camera
 } from "lucide-react";
 
@@ -2605,8 +2605,9 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
   const reducedHook = useReducedMotion();
   const reduced = reducedProp ?? reducedHook;
   const { glowOff } = useMotionPrefs();
-  // Fades the overlaid scroll-hero title as the bloom sequence scrubs past.
-  const [heroP, setHeroP] = useState(0);
+  // Ref to the scroll-hero title wrapper. CanvasHeroSequence fades it
+  // directly on the DOM as the bloom scrubs — no per-scroll React re-render.
+  const heroOverlayRef = useRef(null);
   const sectionRef = useRef(null);
   const stageRef = useRef(null);
   const glowARef = useRef(null);
@@ -2690,11 +2691,12 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
           Apple-style: a pinned canvas scrubs a 270-frame bloom sequence as
           the visitor scrolls, then hands off to the branded home hero below.
           Collapses to a single static poster under reduced-motion. */}
-      <CanvasHeroSequence reduced={reduced} onProgress={setHeroP}>
-        <div style={{ textAlign: "center", maxWidth: 820,
-          // fade the intro title out over the first third of the scrub
-          opacity: reduced ? 1 : Math.max(0, 1 - heroP * 2.4),
-          transform: reduced ? "none" : `translate3d(0, ${heroP * -40}px, 0)`,
+      <CanvasHeroSequence reduced={reduced} overlayRef={heroOverlayRef}>
+        <div ref={heroOverlayRef} style={{ textAlign: "center", maxWidth: 820,
+          // The fade/translate is written straight to this node by
+          // CanvasHeroSequence as you scroll (no React re-render per tick).
+          opacity: 1,
+          transform: "none",
           transition: "opacity 120ms linear",
           pointerEvents: "none" }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
@@ -2717,7 +2719,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             {data.hero.mission}
           </p>
           {!reduced && (
-            <div style={{ marginTop: 34, opacity: Math.max(0, 1 - heroP * 3),
+            <div data-hero-hint style={{ marginTop: 34, opacity: 1,
               fontSize: 12.5, letterSpacing: "1.5px", textTransform: "uppercase",
               color: "rgba(255,255,255,.6)" }}>
               Scroll to watch it bloom
@@ -2983,60 +2985,6 @@ function SponsorsSection({ data }) {
   );
 }
 
-/* ── Hero entrance primitives ───────────────────────────────────────────
-   The hero animates on mount (not on scroll — it's already in view), so
-   these use a timed reveal rather than IntersectionObserver. */
-function HeroIntro({ children, delay = 0, variant = "up", distance = 24,
-  duration = DUR.hero, style }) {
-  const reduced = useReducedMotion();
-  const [show, setShow] = useState(false);
-  useEffect(() => {
-    if (reduced) { setShow(true); return; }
-    const t = setTimeout(() => setShow(true), 40);
-    return () => clearTimeout(t);
-  }, [reduced]);
-  const from = variant === "scale"
-    ? "translate3d(0,14px,0) scale(.94)"
-    : `translate3d(0,${distance}px,0)`;
-  return (
-    <div style={{
-      opacity: show ? 1 : 0,
-      transform: show ? "translate3d(0,0,0) scale(1)" : from,
-      transition: reduced ? "none"
-        : `opacity ${duration}ms ${EASE.outSoft} ${delay}ms, transform ${duration}ms ${EASE.outSoft} ${delay}ms`,
-      ...style,
-    }}>{children}</div>
-  );
-}
-
-/* Headline words rising in sequence from behind a mask. */
-function HeroWords({ text, delay = 0, step = 60 }) {
-  const reduced = useReducedMotion();
-  const [show, setShow] = useState(false);
-  useEffect(() => {
-    if (reduced) { setShow(true); return; }
-    const t = setTimeout(() => setShow(true), 40);
-    return () => clearTimeout(t);
-  }, [reduced]);
-  const words = String(text).split(" ");
-  return (
-    <>
-      {words.map((w, i) => (
-        <span key={i} style={{ display: "inline-block", overflow: "hidden", verticalAlign: "top" }}>
-          <span style={{
-            display: "inline-block",
-            opacity: show ? 1 : 0,
-            transform: show ? "translate3d(0,0,0)" : "translate3d(0,1em,0)",
-            transition: reduced ? "none"
-              : `opacity ${DUR.slow}ms ${EASE.outSoft} ${delay + i * step}ms, transform ${DUR.slow}ms ${EASE.outSoft} ${delay + i * step}ms`,
-          }}>{w}</span>
-          {i < words.length - 1 && <span>&nbsp;</span>}
-        </span>
-      ))}
-    </>
-  );
-}
-
 /* Lanterns strung across the top of the hero. Each hangs from its own cord,
    swings on its own cycle, and glows softly — staggered so they never move
    in unison. Hidden for reduced-motion users. */
@@ -3099,54 +3047,6 @@ function HangingLanterns() {
   );
 }
 
-/* Hero logo — breathes gently, sits inside a soft halo, and lifts on hover.
-   The halo and the float live on separate wrappers so their transforms
-   never fight each other. */
-function AnimatedLogo() {
-  const reduced = useReducedMotion();
-  const [hover, setHover] = useState(false);
-  return (
-    <div style={{ position: "relative", display: "inline-block", marginBottom: 26 }}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      {/* halo */}
-      <div aria-hidden="true" className={reduced ? "" : "logohalo"} style={{
-        position: "absolute", left: "50%", top: "50%", width: 230, height: 230,
-        marginLeft: -115, marginTop: -115, borderRadius: "50%",
-        background: "radial-gradient(circle, rgba(201,182,136,.34) 0%, transparent 66%)",
-        filter: "blur(16px)", pointerEvents: "none",
-      }} />
-      {/* slow orbiting ring of tiny stars */}
-      {!reduced && (
-        <div aria-hidden="true" className="logoorbit" style={{
-          position: "absolute", left: "50%", top: "50%", width: 186, height: 186,
-          marginLeft: -93, marginTop: -93, pointerEvents: "none",
-        }}>
-          {[0, 90, 180, 270].map((deg) => (
-            <span key={deg} style={{ position: "absolute", left: "50%", top: "50%",
-              transform: `rotate(${deg}deg) translateY(-93px)` }}>
-              <Star8 size={9} color={GOLD} opacity={.5} />
-            </span>
-          ))}
-        </div>
-      )}
-      <div className={reduced ? "" : "logofloat"} style={{ position: "relative" }}>
-        <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
-          style={{ width: 132, height: 132, objectFit: "contain",
-            display: "block",
-            boxShadow: hover
-              ? "0 20px 54px rgba(0,0,0,.55), 0 0 0 1px rgba(201,182,136,.55)"
-              : "0 12px 40px rgba(0,0,0,.5), 0 0 0 1px rgba(201,182,136,.3)",
-            transform: hover ? "scale(1.045)" : "scale(1)",
-            transition: `transform ${DUR.base}ms ${EASE.spring}, box-shadow ${DUR.base}ms ${EASE.out}` }} />
-      </div>
-    </div>
-  );
-}
-
-/* ── Tasbih (misbaha) ───────────────────────────────────────────────────
-   A strand of prayer beads that sways like a pendulum, with a single bead
-   catching the light as it travels the loop. Drawn as one SVG so it stays
-   crisp, and animated purely with transform/opacity. */
 function Tasbih({ height = 190, opacity = 0.5, color = GOLD, style }) {
   const reduced = useReducedMotion();
   const BEADS = 21;
