@@ -4,6 +4,7 @@ import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromU
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
 // a visitor actually scrolls near the Quad section.
 const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
+const Globe3D = React.lazy(() => import("./Globe3D.jsx"));
 // Scroll-driven cherry-blossom canvas hero (270-frame sequence). Kept in its
 // own module so the frame-preload logic and canvas loop stay isolated.
 import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
@@ -47,6 +48,7 @@ const GRAD_DEEP = `linear-gradient(135deg, ${INK} 0%, ${PURPLE_D} 55%, ${PURPLE}
 // the site's usual restrained palette.
 const NEON_PURPLE = "#B84BFF";
 const NEON_GOLD = "#FFD23F";
+const NEON_WHITE = "#F5F6FF";   // bright, faintly cool white — for the About globe's neon accent
 
 const MERCH_URL = "https://intentionshq.com/products/msa-x-intentions-off-white-hoodie";
 
@@ -95,7 +97,7 @@ const PAGES = [
   { route: "/about",     label: "About",     sections: ["about", "donate", "connect", "sponsors"] },
   { route: "/prayer",    label: "Prayer",    sections: ["prayer", "islamic-house"] },
   { route: "/events",    label: "Events",    sections: ["events", "stats", "programs"] },
-  { route: "/community", label: "Community", sections: ["board", "instagram", "quad", "mailing"] },
+  { route: "/community", label: "Community", sections: ["board", "instagram", "tiktok", "quad", "mailing"] },
 ];
 
 // Top-level nav: the five pages, an external Merch link, and the Donate CTA
@@ -372,9 +374,17 @@ const MotionPrefsContext = createContext({
   motionOff: false, setMotionOff: () => {},
   glowOff: false, setGlowOff: () => {},
   rippleOff: false, setRippleOff: () => {},
+  dark: false,
 });
 function useMotionPrefs() {
   return useContext(MotionPrefsContext);
+}
+// Live light/dark reading, piggybacking on the same provider as the motion
+// prefs (both are "site-wide visual settings read deep in the tree") so
+// components like the About globe can pick theme-appropriate colors
+// without threading a `dark` prop down through every intermediate section.
+function useTheme() {
+  return useContext(MotionPrefsContext).dark;
 }
 
 // Single source of truth for the reduced-motion preference, kept live so
@@ -1173,6 +1183,8 @@ const seed = {
                 body: "First time hearing about MSA, or just landed on campus? Start with our student guide — it walks through everything from finding prayer spaces to jumping into your first event." },
     instagram: { eyebrow: "Follow along", title: "On Instagram",
                 body: "Event recaps, reminders, and behind-the-scenes moments." },
+    tiktok:   { eyebrow: "Follow along", title: "On TikTok",
+                body: "Quick recaps, event hype, and behind-the-scenes clips." },
   },
   // ── About pillars ─────────────────────────────────────────────────────
   about: {
@@ -1247,6 +1259,15 @@ const seed = {
     // Live embeds: paste permalinks in the admin (Community → Instagram).
     // When empty, the section shows the live @msauw profile embed as a
     // fallback so the feed is never a placeholder block.
+    posts: [],
+  },
+  // ── TikTok — same admin pattern as Instagram: paste individual video
+  // URLs and each renders via TikTok's own oEmbed widget. TikTok doesn't
+  // offer a public "profile grid" iframe the way Instagram does, so with
+  // no posts set the section falls back to a plain "Follow us" card
+  // instead of attempting a live profile embed.
+  tiktok: {
+    handle: "msa.uw",
     posts: [],
   },
   // ── Contact ──────────────────────────────────────────────────────────
@@ -1422,7 +1443,7 @@ function mergeContent(base, saved) {
   const out = { ...base, ...saved };
   for (const key of ["hero", "sections", "prayerTimes", "events", "about",
                      "islamicHouse", "contact", "donate", "eventsExtra",
-                     "bar", "mailing", "newHere", "instagram"]) {
+                     "bar", "mailing", "newHere", "instagram", "tiktok"]) {
     if (base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
       const savedVal = saved?.[key];
       if (savedVal && typeof savedVal === "object" && !Array.isArray(savedVal)) {
@@ -1552,7 +1573,7 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem("msa-motion-off", motionOff ? "on" : "off"); } catch {} }, [motionOff]);
   useEffect(() => { try { localStorage.setItem("msa-glow-off", glowOff ? "on" : "off"); } catch {} }, [glowOff]);
   useEffect(() => { try { localStorage.setItem("msa-ripple-off", rippleOff ? "on" : "off"); } catch {} }, [rippleOff]);
-  const motionPrefs = { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff };
+  const motionPrefs = { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff, dark };
   // App() renders the Provider that everything below it reads from, so it
   // can't consume its own context — combine its one direct use (RippleField)
   // with the local motionOff state by hand instead.
@@ -1729,6 +1750,7 @@ function PageRouter({ route, data, onNav, curtainDone, reduced }) {
       case "programs":      return <ProgramsSection key="programs" data={data} />;
       case "board":         return <BoardSection key="board" data={data} />;
       case "instagram":     return <InstagramSection key="instagram" data={data} />;
+      case "tiktok":         return <TikTokSection key="tiktok" data={data} />;
       case "quad":          return <QuadSection key="quad" data={data} />;
       case "mailing":       return <MailingList key="mailing" data={data} />;
       default:              return null;
@@ -1867,12 +1889,16 @@ function StyleTag() {
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
-        animation: shineSweep 3.2s ${EASE.inOut} infinite;
+        /* Repeats every 3s (that cadence was fine), but now sweeps
+           continuously across the whole cycle instead of finishing the
+           traverse in ~55% of it and holding still the rest of the way —
+           same distance covered, roughly half the speed, and no more
+           abrupt snap-back when it loops. */
+        animation: shineSweep 3s ${EASE.inOut} infinite;
         animation-delay: 1.1s;
       }
       @keyframes shineSweep {
         0%   { background-position: 200% 0; }
-        55%  { background-position: -60% 0; }
         100% { background-position: -60% 0; }
       }
 
@@ -3419,17 +3445,9 @@ function Gallery({ items }) {
   // Only used for the "Turn on animations" escape hatch in the
   // reduced-motion fallback below — lets someone who flipped the site's
   // own Settings > Reduce motion toggle (it persists in localStorage, so
-  // it's easy to forget it's on) get the 3D carousel back with one click,
+  // it's easy to forget it's on) get the coverflow back with one click,
   // without touching anyone whose *OS* has reduced motion turned on.
   const { motionOff, setMotionOff } = useMotionPrefs();
-  const wrapRef = useRef(null);
-  const stickyRef = useRef(null);
-  const sceneRef = useRef(null);
-  const ringRef = useRef(null);
-  const cardRefs = useRef([]);
-  const rotateRef = useRef(() => {});
-  const [activeIdx, setActiveIdx] = useState(0);
-
   const list = (items?.length ? items : []).filter(Boolean);
   const n = list.length;
 
@@ -3441,172 +3459,6 @@ function Gallery({ items }) {
     ];
     return g[i % g.length];
   };
-
-  useEffect(() => {
-    if (reduced || n === 0) return;
-    const wrap = wrapRef.current, sticky = stickyRef.current,
-      scene = sceneRef.current, ring = ringRef.current;
-    if (!wrap || !sticky || !scene || !ring) return;
-
-    const canHover = window.matchMedia?.("(hover: hover)").matches;
-    let raf = 0, inView = false;
-    let angle = 0, angleTarget = 0;     // ring's own spin (deg): scroll + manual
-    let manualOffset = 0;               // added by the arrow buttons
-    let tiltX = 0, tiltXTarget = 0;     // cursor-driven tilt (deg)
-    let tiltY = 0, tiltYTarget = 0;
-    let radius = 0;
-    let lastActive = -1;
-
-    // Sizes each card and the ring radius off the scene's own measured
-    // width — fewer photos get bigger cards, more photos shrink to keep
-    // the ring from overflowing. Cards are rectangular (4:3); the radius is
-    // the minimum needed for evenly-spaced cards around a circle not to
-    // overlap (measured off card *width*, since that's the dimension that
-    // matters for angular spacing), plus headroom.
-    const layout = () => {
-      const w = scene.clientWidth || 1;
-      const base = n <= 5 ? 0.46 : n <= 8 ? 0.36 : n <= 12 ? 0.28 : 0.22;
-      const cardWidth = Math.max(150, Math.min(460, w * base));
-      const cardHeight = cardWidth * 0.75; // 4:3
-      const minRadius = n > 1 ? (cardWidth / 2) / Math.sin(Math.PI / n) : 0;
-      radius = Math.max(minRadius * 1.18, cardWidth * 0.62);
-      sticky.style.perspective = `${Math.max(900, w * 1.15)}px`;
-      cardRefs.current.forEach((card, i) => {
-        if (!card) return;
-        const a = (360 / n) * i;
-        card.style.width = `${cardWidth}px`;
-        card.style.height = `${cardHeight}px`;
-        card.style.marginLeft = `${-cardWidth / 2}px`;
-        card.style.marginTop = `${-cardHeight / 2}px`;
-        card.dataset.angle = a;
-        card.style.transform = `rotateY(${a}deg) translateZ(${radius}px)`;
-      });
-    };
-
-    // 0 at the top of the pinned runway, 1 once scrolled all the way
-    // through it — same "tall spacer + sticky viewport" trick used
-    // elsewhere on the site, just read manually here instead of via a
-    // scroll-linking library. Manual arrow clicks add a flat offset on top
-    // of whatever the scroll position already dictates.
-    const computeProgress = () => {
-      const rect = wrap.getBoundingClientRect();
-      const total = rect.height - window.innerHeight;
-      if (total <= 0) return rect.top <= 0 ? 1 : 0;
-      return Math.max(0, Math.min(1, -rect.top / total));
-    };
-
-    const measure = () => { angleTarget = computeProgress() * 360 + manualOffset; startLoop(); };
-
-    // Exposed to the arrow buttons in the JSX below via rotateRef — steps
-    // exactly one card forward/back regardless of current scroll position.
-    const rotate = (dir) => { manualOffset += dir * (360 / n); measure(); };
-    rotateRef.current = rotate;
-
-    const onPointerMove = (e) => {
-      const rect = scene.getBoundingClientRect();
-      const px = (e.clientX - rect.left) / rect.width - 0.5;
-      const py = (e.clientY - rect.top) / rect.height - 0.5;
-      tiltYTarget = px * 14;
-      tiltXTarget = -py * 10;
-      startLoop();
-    };
-    const onPointerLeave = () => { tiltXTarget = 0; tiltYTarget = 0; startLoop(); };
-
-    // Touch swipe — steps one card per swipe, same as the arrow buttons.
-    // Pure touch events so it never fights the pointermove tilt above
-    // (that's mouse/hover-only on canHover devices).
-    let touchStartX = 0, touchStartY = 0, touchTracking = false;
-    const onTouchStart = (e) => {
-      const t = e.touches?.[0]; if (!t) return;
-      touchStartX = t.clientX; touchStartY = t.clientY; touchTracking = true;
-    };
-    const onTouchEnd = (e) => {
-      if (!touchTracking) return;
-      touchTracking = false;
-      const t = e.changedTouches?.[0]; if (!t) return;
-      const dx = t.clientX - touchStartX, dy = t.clientY - touchStartY;
-      if (n > 1 && Math.abs(dx) >= 36 && Math.abs(dx) > Math.abs(dy) * 1.3) rotate(dx < 0 ? 1 : -1);
-    };
-
-    const startLoop = () => {
-      if (raf || !inView || document.hidden) return;
-      raf = requestAnimationFrame(tick);
-    };
-
-    const tick = () => {
-      angle += (angleTarget - angle) * 0.07;
-      tiltX += (tiltXTarget - tiltX) * 0.08;
-      tiltY += (tiltYTarget - tiltY) * 0.08;
-      ring.style.transform = `rotateY(${(-angle).toFixed(2)}deg)`;
-      scene.style.transform = `rotateX(${tiltX.toFixed(2)}deg) rotateY(${tiltY.toFixed(2)}deg)`;
-
-      let bestI = 0, bestCos = -Infinity;
-      cardRefs.current.forEach((card, i) => {
-        if (!card) return;
-        const a = parseFloat(card.dataset.angle || "0");
-        const eff = ((a - angle) * Math.PI) / 180;
-        const c = Math.cos(eff);
-        const depth = (c + 1) / 2; // 0 = far side, 1 = front-and-center
-        // Opacity-only dimming — a per-card `filter: brightness()` write
-        // every frame forced a much heavier compositing cost (each card
-        // becomes its own filter layer that has to be re-rendered on every
-        // tick) for a subtlety most people never consciously notice next to
-        // the opacity fade. Dropping it was one of the bigger line items in
-        // the mobile-lag pass.
-        card.style.opacity = (0.32 + depth * 0.68).toFixed(2);
-        card.style.zIndex = String(Math.round(depth * 100));
-        if (c > bestCos) { bestCos = c; bestI = i; }
-      });
-      if (bestI !== lastActive) { lastActive = bestI; setActiveIdx(bestI); }
-
-      const settled = Math.abs(angleTarget - angle) < 0.02
-        && Math.abs(tiltXTarget - tiltX) < 0.02 && Math.abs(tiltYTarget - tiltY) < 0.02;
-      if (settled || !inView || document.hidden) { raf = 0; return; }
-      raf = requestAnimationFrame(tick);
-    };
-
-    const io = new IntersectionObserver(([entry]) => {
-      inView = entry.isIntersecting;
-      if (inView) { measure(); startLoop(); }
-      else { cancelAnimationFrame(raf); raf = 0; }
-    }, { rootMargin: "200px 0px" });
-    io.observe(wrap);
-
-    layout();
-    measure();
-    angle = angleTarget; // no lerp lag on first paint
-    tick();
-
-    const ro = new ResizeObserver(layout);
-    ro.observe(scene);
-
-    window.addEventListener("scroll", measure, { passive: true });
-    window.addEventListener("resize", measure, { passive: true });
-    if (canHover) {
-      scene.addEventListener("pointermove", onPointerMove);
-      scene.addEventListener("pointerleave", onPointerLeave);
-    }
-    scene.addEventListener("touchstart", onTouchStart, { passive: true });
-    scene.addEventListener("touchend", onTouchEnd, { passive: true });
-    const onVisibility = () => { if (!document.hidden) startLoop(); };
-    document.addEventListener("visibilitychange", onVisibility);
-
-    return () => {
-      cancelAnimationFrame(raf);
-      io.disconnect();
-      ro.disconnect();
-      window.removeEventListener("scroll", measure);
-      window.removeEventListener("resize", measure);
-      if (canHover) {
-        scene.removeEventListener("pointermove", onPointerMove);
-        scene.removeEventListener("pointerleave", onPointerLeave);
-      }
-      scene.removeEventListener("touchstart", onTouchStart);
-      scene.removeEventListener("touchend", onTouchEnd);
-      document.removeEventListener("visibilitychange", onVisibility);
-      rotateRef.current = () => {};
-    };
-  }, [reduced, n]);
 
   // No photos added yet — a small, compact note instead of rendering
   // nothing (which just left the section looking like a mostly-empty
@@ -3622,7 +3474,7 @@ function Gallery({ items }) {
   }
 
   // Reduced-motion fallback: a plain static grid of rectangular photos,
-  // fully visible immediately, no spinning ring at all.
+  // fully visible immediately, no 3D coverflow at all.
   if (reduced) {
     return (
       <div>
@@ -3659,121 +3511,167 @@ function Gallery({ items }) {
     );
   }
 
+  return <Coverflow list={list} n={n} grad={grad} />;
+}
+
+/* ── Coverflow gallery ─────────────────────────────────────────────────
+   Recreated after Originkit's Coverflow Gallery
+   (https://www.originkit.dev/components/coverflowgallery): the active
+   photo sits upright and in front, flanked by neighbours that tilt back
+   in 3D perspective and dim with distance. Click a side photo to bring
+   it to center; click the centered photo to pop it out into a full
+   zoom view with its caption (PhotoLightbox — same viewer the Islamic
+   House photos use, arrows/swipe/keyboard included).
+   Unlike the old ring carousel this replaces, position is driven purely
+   by clicks/arrows/swipe/keyboard rather than scroll position, so there's
+   no pinned-scroll-runway section to size — just a fixed-height stage
+   that sits in normal document flow. */
+function Coverflow({ list, n, grad }) {
+  const [active, setActive] = useState(0);
+  const [zoomIdx, setZoomIdx] = useState(null);
+  const [cardW, setCardW] = useState(260);
+  const sceneRef = useRef(null);
+  const reduced = useReducedMotion();
+  const lockRef = useRef(false);
+
+  // Card width follows the scene's own measured width — fewer photos get
+  // bigger cards, more photos shrink so neighbours stay on-screen instead
+  // of overflowing off the edges.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const measure = () => {
+      const w = scene.clientWidth || 1;
+      const base = n <= 4 ? 0.5 : n <= 8 ? 0.4 : 0.32;
+      setCardW(Math.max(150, Math.min(420, w * base)));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(scene);
+    return () => ro.disconnect();
+  }, [n]);
+
+  // Briefly locks input after a move so rapid clicks/keys/swipes don't
+  // stack up and look jittery — same guard the reference component uses.
+  const MOVE_MS = 520;
+  const lock = () => { lockRef.current = true; setTimeout(() => { lockRef.current = false; }, MOVE_MS); };
+  const step = (dir) => {
+    if (lockRef.current) return;
+    lock();
+    setActive((a) => ((a + dir) % n + n) % n);
+  };
+  const onCardClick = (i) => {
+    if (i === active) { setZoomIdx(active); return; }
+    if (lockRef.current) return;
+    lock();
+    setActive(i);
+  };
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setZoomIdx(active); }
+  };
+  useSwipe(sceneRef, { onLeft: () => step(1), onRight: () => step(-1), enabled: n > 1 });
+
+  const cardH = cardW * 0.75; // 4:3, matches every other photo card on the site
+  const SCALE_STEP = 0.16, MAX_VISIBLE = 2, DEPTH = cardW * 0.62, TILT = 10, SIDE_TILT = 6;
+  const spacing = cardW * 0.72;
+  const stageHeight = cardH * 1.5;
+
   return (
-    <div ref={wrapRef} className="carousel-wrap">
-      <div className="carousel-sticky" ref={stickyRef}>
-        <div className="carousel-row">
-          {n > 1 && (
-            <button type="button" className="carousel-arrow carousel-arrow-left"
-              onClick={() => rotateRef.current(-1)} aria-label="Previous photo">
-              <ChevronLeft size={22} />
-            </button>
-          )}
-          <div className="carousel-scene" ref={sceneRef}>
-            <div className="carousel-ground" aria-hidden="true" />
-            <div className="carousel-ring" ref={ringRef}>
-              {list.map((it, i) => (
-                <div key={it.id ?? i} className="carousel-card"
-                  ref={(el) => { cardRefs.current[i] = el; }}>
-                  <div className="carousel-card-inner">
-                    {it.img
-                      ? <img src={it.img} alt={it.caption || ""} loading="lazy" decoding="async" />
-                      : <div className="carousel-card-fallback" style={{ background: grad(i) }} />}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-          {n > 1 && (
-            <button type="button" className="carousel-arrow carousel-arrow-right"
-              onClick={() => rotateRef.current(1)} aria-label="Next photo">
-              <ChevronRight size={22} />
-            </button>
-          )}
-        </div>
-        <div className="carousel-caption" aria-live="polite">
-          {list[activeIdx]?.caption || " "}
+    <div>
+      <div ref={sceneRef} tabIndex={0} role="group" aria-roledescription="carousel"
+        aria-label="Moments from the year — photo coverflow"
+        onKeyDown={onKeyDown}
+        style={{ position: "relative", width: "100%", height: stageHeight,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          perspective: 1400, outline: "none", touchAction: "pan-y" }}>
+        <div style={{ position: "relative", width: cardW, height: cardH, transformStyle: "preserve-3d" }}>
+          {list.map((it, i) => {
+            let rel = i - active;
+            if (rel > n / 2) rel -= n;
+            if (rel < -n / 2) rel += n;
+            const ax = Math.abs(rel);
+            const visible = ax <= MAX_VISIBLE;
+            const isActive = rel === 0;
+            const scale = Math.max(0.4, 1 - ax * SCALE_STEP);
+            const tx = rel * spacing;
+            const tz = -ax * DEPTH;
+            const ry = -rel * TILT;
+            const rz = rel * SIDE_TILT;
+            const dim = isActive ? 0 : Math.min(0.6, 0.2 + ax * 0.2);
+            return (
+              <div key={it.id ?? i}
+                onClick={() => visible && onCardClick(i)}
+                aria-label={it.caption || `Photo ${i + 1}`}
+                aria-hidden={!visible}
+                style={{
+                  position: "absolute", left: 0, top: 0, width: cardW, height: cardH,
+                  borderRadius: 16, overflow: "hidden", transformStyle: "preserve-3d",
+                  boxShadow: "0 14px 34px rgba(0,0,0,.38), 0 0 0 3px rgba(255,255,255,.08) inset",
+                  transform: `translate3d(${tx}px,0,${tz}px) rotateY(${ry}deg) rotateZ(${rz}deg) scale(${scale})`,
+                  transition: reduced ? "none" : `transform ${MOVE_MS}ms cubic-bezier(.22,1,.36,1), opacity ${MOVE_MS}ms`,
+                  opacity: visible ? 1 : 0,
+                  cursor: visible ? (isActive ? "zoom-in" : "pointer") : "default",
+                  pointerEvents: visible ? "auto" : "none",
+                  zIndex: MAX_VISIBLE - ax,
+                  background: "#1a1a1a",
+                }}>
+                {it.img
+                  ? <img src={it.img} alt={it.caption || ""} loading="lazy" decoding="async" draggable={false}
+                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
+                        objectFit: "cover", display: "block", userSelect: "none" }} />
+                  : <div style={{ position: "absolute", inset: 0, background: grad(i) }} />}
+                {/* dim overlay — same "distance darkens the card" read as the reference */}
+                <div aria-hidden="true" style={{ position: "absolute", inset: 0, background: "#000",
+                  opacity: dim, transition: reduced ? "none" : `opacity ${MOVE_MS}ms`, pointerEvents: "none" }} />
+                {isActive && (
+                  <>
+                    <div aria-hidden="true" style={{ position: "absolute", inset: 0,
+                      background: "linear-gradient(0deg, rgba(0,0,0,.55) 0%, transparent 45%)",
+                      pointerEvents: "none" }} />
+                    <div aria-hidden="true" style={{ position: "absolute", right: 10, top: 10,
+                      width: 30, height: 30, borderRadius: "50%", background: "rgba(20,17,24,.55)",
+                      border: "1px solid rgba(255,255,255,.3)", display: "grid", placeItems: "center",
+                      color: "#fff", pointerEvents: "none" }}>
+                      <Camera size={14} />
+                    </div>
+                    {it.caption && (
+                      <div style={{ position: "absolute", left: 12, right: 12, bottom: 10,
+                        fontSize: 13, fontWeight: 700, color: "#fff",
+                        textShadow: "0 1px 6px rgba(0,0,0,.6)", pointerEvents: "none" }}>
+                        {it.caption}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
-      <style>{`
-        /* This section used a 220vh spacer + a forced-100vh sticky panel to
-           drive the scroll-linked spin — that combination was the "empty
-           space" under Moments from the Year: ~120vh of pure dead scroll
-           after the pin released, PLUS the sticky panel itself padding the
-           (much shorter) carousel out to a full screen height with blank
-           margins above/below.
 
-           Correction: dropping the sticky panel's forced 100vh (previous
-           note above) turned out to be the wrong fix — it made the sticky
-           panel only as tall as its own content (the scene + arrows +
-           caption, often well under 100vh), and since it's pinned at
-           top:0 rather than vertically centered in the remaining space,
-           whatever's left of the viewport below it just showed bare
-           section background for the ENTIRE scroll-through duration — a
-           much bigger, more obvious "empty space under the carousel" than
-           before. Restoring min-height:100vh here so the pinned panel
-           always fills the screen while it's pinned (no bleed-through
-           gap), and instead keeping the *wrap* short (140vh — only ~40vh
-           of actual scroll runway past the pinned 100vh) so there's
-           barely any dead scroll once the pin releases either. */
-        .carousel-wrap { position: relative; min-height: 112vh; }
-        .carousel-sticky {
-          position: sticky; top: 0; min-height: 100vh; width: 100%;
-          display: flex; flex-direction: column; align-items: center; justify-content: center;
-          overflow: hidden; gap: clamp(14px, 3vh, 30px);
-        }
-        .carousel-row {
-          width: min(96vw, 1300px); display: flex; align-items: center; justify-content: center;
-          gap: clamp(10px, 2.6vw, 30px);
-        }
-        .carousel-arrow {
-          flex: 0 0 auto; width: clamp(38px, 4.4vw, 54px); height: clamp(38px, 4.4vw, 54px);
-          border-radius: 50%; border: 1px solid rgba(255,255,255,.28);
-          background: rgba(20,17,24,.72); color: #fff; display: flex; align-items: center;
-          justify-content: center; cursor: pointer;
-          transition: background .2s ease, transform .15s ease; -webkit-tap-highlight-color: transparent;
-        }
-        .carousel-arrow:hover { background: rgba(255,255,255,.18); transform: scale(1.08); }
-        .carousel-arrow:active { transform: scale(0.94); }
-        .carousel-scene {
-          position: relative; flex: 1 1 auto; min-width: 0; max-width: 1000px;
-          height: clamp(300px, 34vw, 480px);
-          transform-style: preserve-3d; will-change: transform;
-          touch-action: pan-y;
-        }
-        .carousel-ground {
-          position: absolute; left: 50%; top: 50%; width: 68%; height: 26%;
-          transform: translate(-50%,-42%) rotateX(90deg);
-          background: radial-gradient(closest-side, rgba(0,0,0,.32), transparent 72%);
-          pointer-events: none;
-        }
-        .carousel-ring {
-          position: absolute; left: 50%; top: 50%; width: 0; height: 0;
-          transform-style: preserve-3d; will-change: transform;
-        }
-        .carousel-card {
-          position: absolute; left: 0; top: 0;
-          transform-style: preserve-3d;
-        }
-        .carousel-card-inner {
-          width: 100%; height: 100%; border-radius: 16px; overflow: hidden;
-          box-shadow: 0 14px 34px rgba(0,0,0,.38), 0 0 0 3px rgba(255,255,255,.08) inset;
-          transition: transform .25s ease;
-        }
-        .carousel-card:hover .carousel-card-inner { transform: scale(1.05); }
-        .carousel-card img, .carousel-card-fallback {
-          width: 100%; height: 100%; object-fit: cover; display: block;
-        }
-        .carousel-caption {
-          min-height: 1.4em; font-size: clamp(13px, 1.6vw, 16px); font-weight: 700;
-          letter-spacing: .3px; color: var(--accent, ${GOLD}); text-align: center;
-          opacity: .92; padding: 0 16px;
-        }
-        @media (max-width: 640px) {
-          .carousel-scene { height: clamp(230px, 60vw, 340px); }
-          .carousel-arrow { width: 34px; height: 34px; }
-        }
-      `}</style>
+      {n > 1 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+          gap: 12, marginTop: 18 }}>
+          <button className="btn" aria-label="Previous photo" onClick={() => step(-1)}
+            style={boardNavBtn}><ChevronLeft size={17} color="var(--accent)" /></button>
+          <div style={{ display: "flex", gap: 7 }}>
+            {list.map((it, n2) => (
+              <button key={it.id ?? n2} onClick={() => !lockRef.current && (lock(), setActive(n2))}
+                aria-label={`Go to photo ${n2 + 1}`} aria-current={n2 === active}
+                style={{ width: 8, height: 8, borderRadius: 99, border: "none", padding: 0,
+                  cursor: "pointer", background: n2 === active ? GOLD : "var(--border-strong)",
+                  transition: `background ${DUR.fast}ms ${EASE.out}` }} />
+            ))}
+          </div>
+          <button className="btn" aria-label="Next photo" onClick={() => step(1)}
+            style={boardNavBtn}><ChevronRight size={17} color="var(--accent)" /></button>
+        </div>
+      )}
+
+      <PhotoLightbox photos={list} index={zoomIdx} onClose={() => { setActive(zoomIdx); setZoomIdx(null); }}
+        onNav={(dir) => setZoomIdx((i) => { const next = (i + dir + n) % n; setActive(next); return next; })} />
     </div>
   );
 }
@@ -3924,6 +3822,10 @@ function PrayerSection({ data }) {
 const MONTH_NAMES = ["January","February","March","April","May","June",
   "July","August","September","October","November","December"];
 const DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+// Matches the weekday keys used in data.events (Weekly events tab) and
+// Date.getDay()'s 0=Sunday..6=Saturday ordering, for projecting recurring
+// weekly events onto the month grid below.
+const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
 function monthMatrix(year, month) {
   const first = new Date(year, month, 1);
@@ -3936,7 +3838,23 @@ function monthMatrix(year, month) {
   return cells;
 }
 
-function MonthCalendar({ events }) {
+// Turns a free-text time like "7:00 PM" or "1:15pm" into minutes-since-
+// midnight so the day view can sort events chronologically (Google
+// Calendar-style). Unparseable/missing times sort last rather than
+// throwing the whole list into a random order.
+function timeToMinutes(t) {
+  if (!t) return 9999;
+  const m = String(t).trim().match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])?/);
+  if (!m) return 9999;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = (m[3] || "").toLowerCase();
+  if (ap === "pm" && h !== 12) h += 12;
+  if (ap === "am" && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+function MonthCalendar({ events, weeklyEvents }) {
   const today = new Date();
   const [cursor, setCursor] = useState({ y: today.getFullYear(), m: today.getMonth() });
   const [picked, setPicked] = useState(null);
@@ -3953,12 +3871,41 @@ function MonthCalendar({ events }) {
   const dirRef = useRef(0); // -1 = went to previous month, 1 = next, 0 = initial mount
   const mountedRef = useRef(false);
 
+  // Projects the recurring weekly schedule (This week's Halaqa etc. — the
+  // same data the "This week" tab shows, keyed by weekday name) onto every
+  // matching date in whichever month is currently displayed, so a weekly
+  // event shows up on the monthly calendar automatically instead of
+  // needing a separate dated entry from the admin. Recomputed only when
+  // the visible month or the weekly schedule itself changes.
+  const recurringForMonth = React.useMemo(() => {
+    if (!weeklyEvents) return [];
+    const out = [];
+    const daysIn = new Date(cursor.y, cursor.m + 1, 0).getDate();
+    for (let d = 1; d <= daysIn; d++) {
+      const wd = WEEKDAY_NAMES[new Date(cursor.y, cursor.m, d).getDay()];
+      (weeklyEvents[wd] || []).forEach((e) => {
+        out.push({ ...e,
+          id: `recur-${e.id}-${cursor.y}-${cursor.m}-${d}`,
+          date: `${cursor.y}-${String(cursor.m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+          recurring: true });
+      });
+    }
+    return out;
+  }, [weeklyEvents, cursor.y, cursor.m]);
+
+  // Dated (data.calendar) events plus this month's projected recurring
+  // ones. A weekly event an admin ALSO gave a specific dated entry to
+  // (e.g. a one-off relocated Halaqa) just shows twice — harmless, and
+  // rare enough not to bother de-duplicating by name.
+  const allEvents = React.useMemo(() => [...(events || []), ...recurringForMonth],
+    [events, recurringForMonth]);
+
   // Distinct categories present across all events (for the filter chips).
   const categories = React.useMemo(() => {
     const set = new Set();
-    (events || []).forEach((e) => { if (e.category) set.add(e.category); });
+    allEvents.forEach((e) => { if (e.category) set.add(e.category); });
     return Array.from(set).sort();
-  }, [events]);
+  }, [allEvents]);
 
   // Reset the filter if the active category disappears from the data.
   useEffect(() => {
@@ -3967,10 +3914,8 @@ function MonthCalendar({ events }) {
 
   // Apply the active category filter before indexing.
   const filteredEvents = React.useMemo(() =>
-    activeCat === "all"
-      ? (events || [])
-      : (events || []).filter((e) => e.category === activeCat),
-    [events, activeCat]);
+    activeCat === "all" ? allEvents : allEvents.filter((e) => e.category === activeCat),
+    [allEvents, activeCat]);
 
   // Index events by YYYY-MM-DD for O(1) lookup per cell.
   const byDate = React.useMemo(() => {
@@ -4047,7 +3992,12 @@ function MonthCalendar({ events }) {
   const isToday = (d) =>
     d && today.getFullYear() === cursor.y && today.getMonth() === cursor.m && today.getDate() === d;
 
-  const pickedEvents = picked ? (byDate[picked] || []) : [];
+  // Chronological, Google-Calendar-day-view style, not insertion order.
+  const pickedEvents = React.useMemo(() => {
+    const list = picked ? (byDate[picked] || []) : [];
+    return [...list].sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+  }, [picked, byDate]);
+  const pickedDayNum = picked ? Number(picked.split("-")[2]) : null;
 
   return (
     <div style={{ ...card, padding: 0, overflow: "hidden" }}>
@@ -4101,77 +4051,148 @@ function MonthCalendar({ events }) {
               padding: "4px 0" }}>{d}</div>
           ))}
         </div>
+        {/* Day cells are dot-only on narrow phones (not enough width for
+            readable text across 7 columns) and switch to inline "time
+            name" rows — like Google Calendar's month view, per the
+            reference screenshot — once there's room, via the
+            .cal-lines/.cal-dots media query in the <style> block below.
+            Both are always rendered; CSS just picks which one shows. */}
         <div ref={gridRef} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
           {cells.map((d, i) => {
             if (!d) return <div key={i} />;
             const k = key(d);
-            const evs = byDate[k] || [];
+            const evs = (byDate[k] || []).slice().sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
             const has = evs.length > 0;
             const sel = picked === k;
+            const today = isToday(d);
+            const MAX_LINES = 3;
             return (
-              <button key={i} onClick={() => has && setPicked(sel ? null : k)}
+              <button key={i} className="cal-cell" onClick={() => has && setPicked(sel ? null : k)}
                 aria-label={has ? `${d}: ${evs.length} event${evs.length > 1 ? "s" : ""}` : String(d)}
                 disabled={!has}
                 style={{
-                  aspectRatio: "1 / 1", minHeight: 38, borderRadius: 10, padding: 0,
-                  cursor: has ? "pointer" : "default", fontFamily: "inherit",
-                  border: sel ? `2px solid ${GOLD}`
-                    : isToday(d) ? "2px solid var(--accent)" : "1px solid var(--border)",
+                  borderRadius: 10, cursor: has ? "pointer" : "default", fontFamily: "inherit",
+                  border: sel ? `2px solid ${GOLD}` : today ? "2px solid var(--accent)" : "1px solid var(--border)",
                   background: has ? "var(--tint-2)" : "transparent",
-                  color: has ? "var(--accent)" : "var(--text-faint)",
-                  fontWeight: has || isToday(d) ? 700 : 500, fontSize: 13.5,
-                  display: "grid", placeItems: "center", position: "relative",
+                  position: "relative", textAlign: "left",
                   transition: reduced ? "none"
                     : `background ${DUR.fast}ms ${EASE.out}, border-color ${DUR.fast}ms ${EASE.out}, transform ${DUR.fast}ms ${EASE.out}`,
                   transform: sel ? "translate3d(0,-2px,0)" : "none",
                 }}>
-                {d}
+                <span className="cal-daynum" style={{
+                  fontWeight: has || today ? 700 : 500, fontSize: 13.5,
+                  color: has ? "var(--accent)" : "var(--text-faint)" }}>
+                  {today
+                    ? <span style={{ display: "inline-grid", placeItems: "center", width: 20, height: 20,
+                        borderRadius: "50%", background: PURPLE, color: "#fff", fontSize: 11.5 }}>{d}</span>
+                    : d}
+                </span>
+
+                {/* mobile: small dot cluster, same as before */}
                 {has && (
-                  <span aria-hidden="true" style={{ position: "absolute", bottom: 5,
-                    display: "flex", gap: 2 }}>
+                  <span aria-hidden="true" className="cal-dots" style={{ position: "absolute", bottom: 5,
+                    left: 0, right: 0, justifyContent: "center", gap: 2 }}>
                     {evs.slice(0, 3).map((_, n) => (
-                      <span key={n} style={{ width: 4, height: 4, borderRadius: 99,
-                        background: GOLD }} />
+                      <span key={n} style={{ width: 4, height: 4, borderRadius: 99, background: GOLD }} />
                     ))}
+                  </span>
+                )}
+
+                {/* tablet/desktop: actual event rows inline in the box */}
+                {has && (
+                  <span className="cal-lines" style={{ flexDirection: "column", gap: 2, marginTop: 2, minWidth: 0 }}>
+                    {evs.slice(0, MAX_LINES).map((e) => (
+                      <span key={e.id} style={{ display: "flex", alignItems: "center", gap: 3,
+                        fontSize: 10.5, lineHeight: 1.3, minWidth: 0 }}>
+                        <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: "50%",
+                          flexShrink: 0, background: e.recurring ? GOLD : "var(--accent)" }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          color: "var(--text)", fontWeight: 600 }}>
+                          {e.time && <span style={{ color: "var(--text-faint)", fontWeight: 500 }}>{e.time} </span>}
+                          {e.name}
+                        </span>
+                      </span>
+                    ))}
+                    {evs.length > MAX_LINES && (
+                      <span style={{ fontSize: 10, color: "var(--text-faint)", paddingLeft: 8 }}>
+                        +{evs.length - MAX_LINES} more
+                      </span>
+                    )}
                   </span>
                 )}
               </button>
             );
           })}
         </div>
+        <style>{`
+          .cal-cell { min-height: 38px; padding: 0; display: grid; place-items: center; }
+          .cal-cell .cal-dots { display: flex; }
+          .cal-cell .cal-lines { display: none; }
+          @media (min-width: 640px) {
+            .cal-cell { min-height: 92px; padding: 6px 6px 5px; display: flex;
+              flex-direction: column; align-items: stretch; justify-content: flex-start; }
+            .cal-cell .cal-daynum { align-self: flex-start; }
+            .cal-cell .cal-dots { display: none; }
+            .cal-cell .cal-lines { display: flex; }
+          }
+        `}</style>
 
-        {/* Selected day detail — animates open without measuring height */}
+        {/* Selected day detail — Google-Calendar-day-view style: a
+            circular day-number badge up top, then a plain chronological
+            list of colored-dot + time + name rows instead of the old
+            boxed cards, per the reference screenshot. Still animates open
+            without measuring height. */}
         <div style={{ display: "grid",
           gridTemplateRows: pickedEvents.length ? "1fr" : "0fr",
           opacity: pickedEvents.length ? 1 : 0,
-          marginTop: pickedEvents.length ? 12 : 0,
+          marginTop: pickedEvents.length ? 14 : 0,
           transition: reduced ? "none"
             : `grid-template-rows ${DUR.base}ms ${EASE.out}, opacity ${DUR.base}ms ${EASE.out}, margin-top ${DUR.base}ms ${EASE.out}` }}>
           <div style={{ overflow: "hidden" }}>
-            <div style={{ display: "grid", gap: 8 }}>
-              {pickedEvents.map((e) => (
-                <div key={e.id} style={{ borderRadius: 10, padding: "12px 14px",
-                  background: "var(--tint)", border: "1px solid var(--border)" }}>
-                  <div style={{ fontWeight: 700, fontSize: 14.5, color: "var(--text)" }}>
-                    {e.name}</div>
-                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
-                    {e.time && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4,
-                        fontSize: 12.5, color: "var(--accent)", fontWeight: 600 }}>
-                        <Clock size={12} /> {e.time}</span>
-                    )}
-                    {e.loc && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4,
-                        fontSize: 12.5, color: "var(--text-faint)" }}>
-                        <MapPin size={12} /> {e.loc}</span>
-                    )}
-                  </div>
-                  {e.desc && (
-                    <div style={{ marginTop: 6, fontSize: 12.5, color: "var(--text-muted)",
-                      lineHeight: 1.55 }}>{e.desc}</div>
-                  )}
+            <div style={{ borderRadius: 12, border: "1px solid var(--border)",
+              background: "var(--surface)", padding: "16px 16px 10px" }}>
+              {pickedDayNum != null && (
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                  <span style={{ display: "grid", placeItems: "center", width: 30, height: 30,
+                    borderRadius: "50%", background: PURPLE, color: "#fff",
+                    fontSize: 13.5, fontWeight: 700 }}>
+                    {pickedDayNum}
+                  </span>
                 </div>
-              ))}
+              )}
+              <div style={{ display: "grid", gap: 10 }}>
+                {pickedEvents.map((e) => (
+                  <div key={e.id} style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                    <span aria-hidden="true" style={{ flexShrink: 0, width: 8, height: 8,
+                      borderRadius: "50%", background: e.recurring ? GOLD : "var(--accent)" }} />
+                    <div style={{ minWidth: 0, display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      {e.time && (
+                        <span style={{ fontSize: 13.5, color: "var(--text-muted)",
+                          whiteSpace: "nowrap" }}>{e.time}</span>
+                      )}
+                      <span style={{ fontSize: 14.5, fontWeight: 700, color: "var(--text)" }}>
+                        {e.name}</span>
+                      {e.recurring && (
+                        <span title="Repeats every week — from the Weekly events tab"
+                          style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".5px",
+                            textTransform: "uppercase", color: "var(--accent)",
+                            border: "1px solid var(--border-strong)", borderRadius: 999,
+                            padding: "1px 6px" }}>Weekly</span>
+                      )}
+                      {e.loc && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3,
+                          fontSize: 12, color: "var(--text-faint)" }}>
+                          <MapPin size={11} /> {e.loc}</span>
+                      )}
+                      {e.desc && (
+                        <div style={{ flexBasis: "100%", fontSize: 12.5, color: "var(--text-muted)",
+                          lineHeight: 1.5 }}>{e.desc}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ height: 6 }} />
             </div>
           </div>
         </div>
@@ -4179,7 +4200,8 @@ function MonthCalendar({ events }) {
         {Object.keys(byDate).length === 0 && (
           <div style={{ marginTop: 12, textAlign: "center", fontSize: 13,
             color: "var(--text-faint)", padding: "10px 0" }}>
-            No dated events yet — add them from the admin panel.
+            No events this month yet — weekly events (Weekly events tab) show up here
+            automatically, or add a one-off dated event from the admin panel.
           </div>
         )}
       </div>
@@ -4239,7 +4261,7 @@ function EventsViews({ data }) {
 
       {view === "week"
         ? <WeeklyEvents data={data} />
-        : <Reveal variant="rise" distance={24}><MonthCalendar events={data.calendar || []} /></Reveal>}
+        : <Reveal variant="rise" distance={24}><MonthCalendar events={data.calendar || []} weeklyEvents={data.events || {}} /></Reveal>}
 
       <Reveal delay={160} variant="rise" distance={24}>
         <div style={{ marginTop: 26, ...card, padding: "24px 26px", display: "flex",
@@ -4785,19 +4807,115 @@ function QuadSection({ data }) {
 }
 
 /* ---------- ABOUT ---------- */
+/* Lazily mounts the Three.js globe next to the About section's title once
+   it's near the viewport (same code-split + useInView pattern as
+   LazyQuadTree above), and only above a width where there's actually room
+   for it — on phones/small tablets it doesn't render at all, so mobile
+   visitors never pay for the three.js chunk, the GeoJSON fetch, or a WebGL
+   context they can't usefully see. Once mounted, Globe3D itself pauses its
+   own render loop whenever it scrolls out of view or the tab is
+   backgrounded (see Globe3D.jsx), so it's cheap to leave mounted after
+   that first reveal. */
+function AboutGlobe() {
+  const reduced = useReducedMotion();
+  const dark = useTheme();
+  const [ref, near] = useInView({ threshold: 0, rootMargin: "400px 0px" });
+  const [wide, setWide] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 900 : false);
+  useEffect(() => {
+    const calc = () => setWide(window.innerWidth >= 900);
+    calc();
+    window.addEventListener("resize", calc, { passive: true });
+    return () => window.removeEventListener("resize", calc);
+  }, []);
+
+  // Dark surfaces get a neon-WHITE globe (pops against the dark bg, with
+  // a purple secondary glow for brand color). Light surfaces flip to a
+  // neon-PURPLE globe instead — white dots/outline all but disappear on
+  // the light theme's pale background, which is what prompted this in
+  // the first place. The purple+gold glow pairing on the light side
+  // reuses the same "neon" duo the rosary medallion glow uses elsewhere.
+  // The Seattle marker swaps to whichever of the two isn't the globe's
+  // own color, so it keeps standing out against the sphere either way.
+  const globeColor = dark ? NEON_WHITE : NEON_PURPLE;
+  const markerColor = dark ? NEON_PURPLE : GOLD_D;
+  const glowA = dark ? NEON_WHITE : NEON_PURPLE;
+  const glowB = dark ? NEON_PURPLE : NEON_GOLD;
+  const graticuleRgba = dark ? "rgba(255,255,255,0.3)" : "rgba(184,75,255,0.32)";
+
+  // Object props are memoized so an unrelated re-render of AboutSection
+  // (e.g. admin content edits elsewhere on the page) doesn't hand Globe3D
+  // brand-new object identities on every render — its effect tears down
+  // and rebuilds the whole WebGL scene whenever these change, so keeping
+  // their identity stable (and only changing when the theme actually
+  // flips) matters for not janking the page.
+  const dots = React.useMemo(() => ({ color: globeColor, size: 4, density: 6, allDots: false }),
+    [globeColor]);
+  const markerConfig = React.useMemo(() => ({
+    markers: [{ lat: 47.6062, lng: -122.3321 }], // Seattle, WA
+    color: markerColor,
+    size: 60,
+  }), [markerColor]);
+
+  if (!wide) return null;
+
+  return (
+    <div ref={ref} aria-hidden="true" style={{
+      position: "relative", width: "clamp(260px, 28vw, 380px)", height: "clamp(260px, 28vw, 380px)",
+      flexShrink: 0, margin: "0 auto" }}>
+      {/* Layered neon halo behind the sphere — same "glow ring" language
+          as the rosary medallion's neon effect elsewhere on the site,
+          just softer since this sits behind real 3D content rather than
+          being the whole effect. Colors follow the theme, see above. */}
+      <div aria-hidden="true" style={{ position: "absolute", inset: "4%", borderRadius: "50%",
+        filter: "blur(30px)", background: `radial-gradient(circle, ${glowA}26 0%, transparent 68%)` }} />
+      <div aria-hidden="true" style={{ position: "absolute", inset: "10%", borderRadius: "50%",
+        filter: "blur(22px)", background: `radial-gradient(circle, ${glowB}30 0%, transparent 72%)` }} />
+      {near && (
+        <React.Suspense fallback={null}>
+          <Globe3D
+            speed={reduced ? 0 : 1.3}
+            direction="right"
+            scale={8}
+            detail={5}
+            dragSpeed={4}
+            stopOnHover
+            fill="dots"
+            dots={dots}
+            oceanColor="rgba(91,61,140,0.1)"
+            outlineColor={globeColor}
+            outlineWidth={1.3}
+            graticuleColor={graticuleRgba}
+            showGrid
+            showOutline
+            markerConfig={markerConfig}
+          />
+        </React.Suspense>
+      )}
+    </div>
+  );
+}
+
 function AboutSection({ data }) {
   const about = data.about || seed.about;
   return (
     <Band id="about" lattice rosettes="right" decor="left" light lightTone="violet" lightAt="top-right">
-      <SectionCopy data={data} sectionKey="about" />
-      {about.intro && (
-        <Reveal delay={200} variant="up" distance={18}>
-          <div style={{ maxWidth: 720, marginBottom: 34, color: "var(--text-muted)",
-            fontSize: 16.5, lineHeight: 1.7 }}>
-            <Markdown text={about.intro} style={{ margin: "0 0 12px" }} />
-          </div>
+      <div style={{ display: "flex", gap: 40, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ flex: "1 1 420px", minWidth: 0 }}>
+          <SectionCopy data={data} sectionKey="about" />
+          {about.intro && (
+            <Reveal delay={200} variant="up" distance={18}>
+              <div style={{ maxWidth: 720, marginBottom: 34, color: "var(--text-muted)",
+                fontSize: 16.5, lineHeight: 1.7 }}>
+                <Markdown text={about.intro} style={{ margin: "0 0 12px" }} />
+              </div>
+            </Reveal>
+          )}
+        </div>
+        <Reveal delay={280} variant="up" distance={18}>
+          <AboutGlobe />
         </Reveal>
-      )}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
         gap: 18 }}>
         {(about.pillars || []).map((p, n) => (
@@ -5670,6 +5788,103 @@ function InstagramProfileEmbed({ handle }) {
   );
 }
 
+/* ---------- TIKTOK ────────────────────────────────────────────────────
+   Same admin pattern as Instagram above: paste individual video URLs,
+   each renders via TikTok's own oEmbed widget (embed.js). TikTok has no
+   public equivalent of Instagram's profile-grid iframe, so with no posts
+   set this just shows a "Follow us" card instead of trying to fake a
+   live feed. ── */
+// Loads TikTok's embed.js once and re-triggers its scan for any embed
+// component (video or creator profile) mounted after the first load —
+// same idea as InstagramEmbed's loader above, just shared across both
+// TikTok embed kinds so there's one script tag total no matter how many
+// blockquotes end up on the page.
+function useTikTokEmbedScript(dep) {
+  useEffect(() => {
+    // embed.js scans the page for tiktok-embed blockquotes on its own
+    // load and sets up a MutationObserver for anything added afterward
+    // (e.g. an admin adding a video/handle without a full page reload),
+    // so all this needs to do is make sure exactly one copy of the
+    // script tag ever gets added.
+    if (document.querySelector('script[src="https://www.tiktok.com/embed.js"]')) return;
+    const script = document.createElement("script");
+    script.src = "https://www.tiktok.com/embed.js";
+    script.async = true;
+    document.body.appendChild(script);
+  }, [dep]);
+}
+
+function TikTokEmbed({ url }) {
+  useTikTokEmbedScript(url);
+  return (
+    <blockquote className="tiktok-embed" cite={url} data-video-id="" style={{ maxWidth: 325,
+      minWidth: 260, margin: "0 auto" }}>
+      <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+    </blockquote>
+  );
+}
+
+// TikTok's official Creator Profile Embed
+// (https://developers.tiktok.com/doc/embed-creator-profiles) — the same
+// embed.js script renders this into a live card with avatar, follower/
+// following/likes counts, and up to 10 of the account's most recent
+// videos, auto-updating with no admin upkeep. This is what shows when no
+// individual video URLs have been pinned, mirroring how the Instagram
+// section falls back to a live profile embed.
+function TikTokProfileEmbed({ handle }) {
+  const cite = `https://www.tiktok.com/@${handle}`;
+  useTikTokEmbedScript(handle);
+  return (
+    <div style={{ maxWidth: 720, minWidth: 288, margin: "0 auto", width: "100%" }}>
+      <blockquote className="tiktok-embed" cite={cite} data-unique-id={handle}
+        data-embed-type="creator" data-embed-from="oembed"
+        style={{ maxWidth: 720, minWidth: 288, margin: "0 auto" }}>
+        <section>
+          <a target="_blank" rel="noopener noreferrer" href={`${cite}?refer=creator_embed`}>@{handle}</a>
+        </section>
+      </blockquote>
+    </div>
+  );
+}
+
+function TikTokSection({ data }) {
+  const tk = data.tiktok || seed.tiktok;
+  const posts = (tk.posts || []).filter((p) => p.url);
+  const handle = (tk.handle || "").replace(/^@/, "").trim();
+  return (
+    <Band id="tiktok" lattice rosettes="wide" light lightTone="violet" lightAt="top-left">
+      <SectionCopy data={data} sectionKey="tiktok" />
+      {handle && (
+        <Reveal variant="rise" distance={16}>
+          <a href={`https://www.tiktok.com/@${handle}`} target="_blank" rel="noopener noreferrer"
+            className="lift" style={{ display: "inline-flex", alignItems: "center", gap: 8,
+              marginBottom: 22, padding: "10px 18px", borderRadius: 999, textDecoration: "none",
+              fontWeight: 700, fontSize: 14, color: "#fff", background: "#000" }}>
+            <TikTokIcon size={16} /> Follow @{handle}
+          </a>
+        </Reveal>
+      )}
+      {posts.length > 0 ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
+          gap: 20, justifyItems: "center" }}>
+          {posts.map((p, i) => (
+            <Reveal key={p.id ?? i} delay={i * 70} variant="rise" distance={20}>
+              <TikTokEmbed url={p.url} />
+            </Reveal>
+          ))}
+        </div>
+      ) : handle ? (
+        /* No individual video URLs pinned → the live creator profile
+           embed (avatar, stats, recent videos) so the section is never
+           just a placeholder, same as Instagram's fallback above. */
+        <Reveal variant="rise" distance={18}>
+          <TikTokProfileEmbed handle={handle} />
+        </Reveal>
+      ) : null}
+    </Band>
+  );
+}
+
 /* ---------- CONNECT ---------- */
 function ConnectSection({ data }) {
   const c = data.contact || seed.contact;
@@ -5678,63 +5893,102 @@ function ConnectSection({ data }) {
     facebook: "#1877F2", tiktok: "#000000", linkedin: "#0A66C2",
     donate: `linear-gradient(135deg,${PURPLE},${GOLD})`, link: PURPLE,
   }[k] || PURPLE);
+  const items = [
+    { key: "email", href: `mailto:${c.email}`, external: false,
+      icon: <Mail size={22} color="#fff" />, bg: `linear-gradient(135deg, ${PURPLE}, ${VIOLET})`,
+      label: "Email us", sub: c.email },
+    ...(data.links || []).map((l) => ({
+      key: l.id, href: safeHref(l.href), external: true,
+      icon: linkIcon(l.kind), bg: bg(l.kind), label: l.name, sub: "Open" })),
+  ];
   return (
     <Band id="connect" lattice decor="left" rosettes="wide" light lightTone="rose" lightAt="top-left">
       <SectionCopy data={data} sectionKey="connect" />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(250px,1fr))", gap: 16 }}>
-        <Reveal variant="rise" distance={26}>
-          <a className="lift" href={`mailto:${c.email}`}
-            style={{ ...card, padding: "22px 24px", display: "flex", alignItems: "center", gap: 16,
-              textDecoration: "none", height: "100%" }}>
-            <div style={{ width: 50, height: 50, borderRadius: 13, display: "grid",
-              placeItems: "center", background: `linear-gradient(135deg, ${PURPLE}, ${VIOLET})`,
-              flexShrink: 0 }}>
-              <Mail size={22} color="#fff" />
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>Email us</div>
-              <div style={{ fontSize: 13.5, color: "var(--text-muted)" }}>{c.email}</div>
-            </div>
-          </a>
-        </Reveal>
-        {(data.links || []).map((l, n) => (
-          <Reveal key={l.id} delay={(n + 1) * 65} variant="rise" distance={26}>
-            <LinkCard link={l} bg={bg(l.kind)} />
-          </Reveal>
-        ))}
-      </div>
+      <InteractiveLinkGrid items={items} />
     </Band>
   );
 }
 
-/* Connect card — icon tile tilts, arrow slides out on hover. */
-function LinkCard({ link: l, bg }) {
-  const [hover, setHover] = useState(false);
+/* Find Your People — link tiles with the "interactive grid" hover
+   treatment (https://www.originkit.dev/components/interactive-grid): the
+   tile under the cursor pops up and its four orthogonal neighbours (not
+   diagonal) lift slightly with it, like a soft ripple through the grid.
+   The reference component is a wall of bare logos with no labels; ours
+   keeps icon + name + a one-line sub so it's still usable as real
+   navigation, not just decoration. Neighbour math needs a fixed column
+   count to know who's "above/below/left/right" of the hovered tile, so
+   columns track viewport width the same way BoardSection's perPage does. */
+function InteractiveLinkGrid({ items }) {
+  const [cols, setCols] = useState(4);
+  useEffect(() => {
+    const calc = () => setCols(window.innerWidth < 560 ? 2 : window.innerWidth < 860 ? 3 : 4);
+    calc();
+    window.addEventListener("resize", calc, { passive: true });
+    return () => window.removeEventListener("resize", calc);
+  }, []);
+  const [hovered, setHovered] = useState(null);
+  const leaveTimer = useRef(null);
+  const reduced = useReducedMotion();
+  const n = items.length;
+
+  useEffect(() => () => { if (leaveTimer.current) clearTimeout(leaveTimer.current); }, []);
+
+  const neighbours = React.useMemo(() => {
+    if (hovered === null) return [];
+    const out = [];
+    if (hovered % cols !== 0) out.push(hovered - 1);
+    if (hovered % cols !== cols - 1) out.push(hovered + 1);
+    out.push(hovered - cols);
+    out.push(hovered + cols);
+    return out.filter((x) => x >= 0 && x < n);
+  }, [hovered, cols, n]);
+
+  const onEnter = (i) => {
+    if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
+    setHovered(i);
+  };
+  const onLeave = () => {
+    if (leaveTimer.current) clearTimeout(leaveTimer.current);
+    leaveTimer.current = setTimeout(() => setHovered(null), 200);
+  };
+
   return (
-    <a href={safeHref(l.href)} target="_blank" rel="noopener noreferrer" className="lift"
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      style={{ ...card, padding: "22px 24px", display: "flex", alignItems: "center", gap: 16,
-        textDecoration: "none", height: "100%" }}>
-      <div style={{ width: 50, height: 50, borderRadius: 13, background: bg,
-        display: "grid", placeItems: "center", flexShrink: 0,
-        transform: hover ? "translate3d(0,-2px,0) scale(1.07) rotate(-3deg)" : "none",
-        boxShadow: hover ? "0 10px 22px rgba(20,17,24,.22)" : "0 0 0 rgba(0,0,0,0)",
-        transition: `transform ${DUR.base}ms ${EASE.spring}, box-shadow ${DUR.base}ms ${EASE.out}` }}>
-        {linkIcon(l.kind)}
-      </div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>{l.name}</div>
-        <div style={{ color: "var(--accent)", fontSize: 13, fontWeight: 600, display: "flex",
-          alignItems: "center", gap: 4, marginTop: 2 }}>
-          Open
-          <span style={{ display: "inline-flex",
-            transform: hover ? "translate3d(4px,-2px,0)" : "none",
-            transition: `transform ${DUR.base}ms ${EASE.spring}` }}>
-            <ExternalLink size={12} />
-          </span>
-        </div>
-      </div>
-    </a>
+    <div onPointerLeave={onLeave} style={{ display: "grid",
+      gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: 14 }}>
+      {items.map((it, i) => {
+        const isBig = !reduced && hovered === i;
+        const isSmall = !reduced && !isBig && neighbours.includes(i);
+        return (
+          <Reveal key={it.key} delay={i * 55} variant="rise" distance={22}>
+            <a href={it.href} target={it.external ? "_blank" : undefined}
+              rel={it.external ? "noopener noreferrer" : undefined}
+              onPointerEnter={() => onEnter(i)}
+              style={{ ...card, position: "relative", display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center", gap: 10, padding: "24px 14px",
+                textDecoration: "none", height: "100%", boxSizing: "border-box",
+                zIndex: isBig ? n + 1 : i + 1,
+                transform: isBig ? "translate3d(0,-6px,0) scale(1.08)"
+                  : isSmall ? "scale(1.035)" : "none",
+                boxShadow: isBig ? "0 18px 36px rgba(20,17,24,.24)" : card.boxShadow,
+                transition: reduced ? "none"
+                  : `transform ${DUR.base}ms ${EASE.spring}, box-shadow ${DUR.base}ms ${EASE.out}` }}>
+              <div style={{ width: 50, height: 50, borderRadius: 13, background: it.bg,
+                display: "grid", placeItems: "center", flexShrink: 0 }}>
+                {it.icon}
+              </div>
+              <div style={{ textAlign: "center", minWidth: 0 }}>
+                <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 14.5 }}>{it.label}</div>
+                {it.sub && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {it.sub}</div>
+                )}
+              </div>
+            </a>
+          </Reveal>
+        );
+      })}
+    </div>
   );
 }
 
@@ -6014,7 +6268,7 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
                 { group: "About", items: [["about", "About us"], ["donate", "Donate"], ["sponsors", "Sponsors"]] },
                 { group: "Prayer", items: [["times", "Prayer times"], ["spaces", "Prayer spaces"], ["house", "Islamic House"]] },
                 { group: "Events", items: [["events", "Weekly events"], ["calendar", "Calendar"], ["stats", "Stats / metrics"], ["programs", "Programs"]] },
-                { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["mailing", "Mailing list"]] },
+                { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["tiktok", "TikTok"], ["mailing", "Mailing list"]] },
               ].map(({ group, items }) => (
                 <div key={group} style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1px",
@@ -6200,7 +6454,7 @@ function Editor({ tab, data, setData }) {
       ["islamicHouse", "Islamic House"], ["gallery", "Photo gallery"],
       ["sponsors", "Sponsors"], ["board", "Board members"], ["prayer", "Prayer"],
       ["events", "Events"], ["programs", "Programs"], ["connect", "Connect"],
-      ["newHere", "New here?"], ["instagram", "Instagram"],
+      ["newHere", "New here?"], ["instagram", "Instagram"], ["tiktok", "TikTok"],
     ];
     const sections = data.sections || {};
     const setSection = (key, patch) => up({
@@ -6714,6 +6968,47 @@ function Editor({ tab, data, setData }) {
               <button onClick={() => setIg({ posts: posts.filter((_, n) => n !== i) })}
                 style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
                 aria-label="Delete post"><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+      </Section>
+    );
+  }
+
+  if (tab === "tiktok") {
+    const tk = data.tiktok || seed.tiktok;
+    const setTk = (patch) => up({ tiktok: { ...tk, ...patch } });
+    const posts = tk.posts || [];
+    const editP = (i, patch) => { const c = [...posts]; c[i] = { ...c[i], ...patch }; setTk({ posts: c }); };
+    return (
+      <Section title="TikTok">
+        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Paste the URL of any public TikTok video (copy the share link) to pin specific videos —
+          each renders as a real embedded video, no login required. With no videos pinned, the
+          section instead shows TikTok's own live profile card for the handle below (avatar,
+          follower count, and up to 10 recent videos, updating on its own — nothing to maintain
+          here). The heading/intro text is edited on the Section text tab.
+        </p>
+        <Field label={'TikTok handle (for the "Follow us" link)'}>
+          <input style={inp} value={tk.handle || ""} placeholder="msa.uw"
+            onChange={(e) => setTk({ handle: e.target.value })} />
+        </Field>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          margin: "16px 0 10px" }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Videos</h4>
+          <button onClick={() => setTk({ posts: [...posts, { id: Date.now(), url: "" }] })}
+            style={miniBtn}><Plus size={14} /> Add</button>
+        </div>
+        <div style={{ display: "grid", gap: 12 }}>
+          {posts.map((p, i) => (
+            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, display: "grid", gap: 8, position: "relative" }}>
+              <div><label style={lbl}>Video URL</label>
+                <input style={inpSm} value={p.url || ""} placeholder="https://www.tiktok.com/@msa.uw/video/…"
+                  onChange={(e) => editP(i, { url: e.target.value })} /></div>
+              <button onClick={() => setTk({ posts: posts.filter((_, n) => n !== i) })}
+                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
+                aria-label="Delete video"><Trash2 size={15} /></button>
             </div>
           ))}
         </div>
