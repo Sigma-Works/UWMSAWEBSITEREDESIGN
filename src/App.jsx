@@ -2217,12 +2217,13 @@ function MasjidalPopup({ times, onClose }) {
   }, [onClose]);
 
   const embed = (times?.masjidalEmbed || "").trim();
-  // We only embed a Masjidal iframe when the admin has pasted the exact embed
-  // code from their masjidal.com account (Settings → Web Integration). We
-  // don't synthesize a widget URL from just the Masjid ID, because Masjidal's
-  // embed URL format isn't a stable public contract. With no embed pasted, we
-  // show the manual times (which always render) plus a link to masjidal.com.
+  const id = (times?.masjidalId || "").trim();
+  // Prefer a pasted embed (sanitized); otherwise build the AthanPlus widget
+  // URL straight from the Masjid ID — same host the prayer card uses.
   const cleanEmbed = embed ? sanitizeIframe(embed) : "";
+  const widgetSrc = !cleanEmbed && id
+    ? `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(id)}&color=000000`
+    : "";
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
@@ -2239,9 +2240,12 @@ function MasjidalPopup({ times, onClose }) {
             <X size={17} color="var(--accent)" />
           </button>
         </div>
-        <div style={{ padding: cleanEmbed ? 0 : 18 }}>
+        <div style={{ padding: (cleanEmbed || widgetSrc) ? 0 : 18 }}>
           {cleanEmbed ? (
             <div style={{ width: "100%" }} dangerouslySetInnerHTML={{ __html: cleanEmbed }} />
+          ) : widgetSrc ? (
+            <iframe title="Prayer times" src={widgetSrc} loading="lazy"
+              style={{ width: "100%", height: 500, border: "none", display: "block" }} />
           ) : (
             /* Manual times (always render) + link to the live Masjidal page. */
             <div style={{ display: "grid", gap: 8 }}>
@@ -2281,8 +2285,8 @@ function sanitizeIframe(html) {
   const srcM = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
   if (!srcM) return "";
   const src = srcM[1];
-  // only allow https iframes from masjidal
-  if (!/^https:\/\/([\w-]+\.)?masjidal\.com\//i.test(src)) return "";
+  // only allow https iframes from Masjidal / AthanPlus (its widget host)
+  if (!/^https:\/\/([\w-]+\.)?(masjidal\.com|athanplus\.com)\//i.test(src)) return "";
   return `<iframe src="${src}" style="width:100%;height:520px;border:none;display:block" loading="lazy" title="Masjidal prayer times"></iframe>`;
 }
 
@@ -5059,33 +5063,20 @@ function QuadSection({ data }) {
 }
 
 /* ---------- ABOUT ---------- */
-/* Looping cherry-blossom video in the About section — replaces the old 3D
-   globe (which pulled in three.js + a ~500KB chunk). Circular framed to keep
-   the same silhouette + neon halo as before. The <video> only mounts once it
-   scrolls near the viewport, is muted/inline/looping so it autoplays on all
-   browsers, pauses itself when scrolled away or the tab is hidden (no wasted
-   decode), and falls back to a static poster under reduced-motion. */
-function AboutVideo() {
+function AboutSection({ data }) {
+  const about = data.about || seed.about;
   const reduced = useReducedMotion();
-  const dark = useTheme();
-  const [ref, near] = useInView({ threshold: 0, rootMargin: "300px 0px" });
-  const [wide, setWide] = useState(() =>
-    typeof window !== "undefined" ? window.innerWidth >= 900 : false);
+  const copy = data.sections?.about ?? seed.sections.about;
   const vidRef = useRef(null);
+  const wrapRef = useRef(null);
   const inViewRef = useRef(false);
+  const base = import.meta.env.BASE_URL || "/";
+  const poster = `${base}video/about-poster.webp`;
 
+  // Autoplay the background video only while it's on-screen and the tab is
+  // visible — pause otherwise so a looping clip never burns CPU/battery.
   useEffect(() => {
-    const calc = () => setWide(window.innerWidth >= 900);
-    calc();
-    window.addEventListener("resize", calc, { passive: true });
-    return () => window.removeEventListener("resize", calc);
-  }, []);
-
-  // Pause the video whenever it's off-screen or the tab is backgrounded, and
-  // resume when it comes back — so a looping clip never burns CPU/battery
-  // decoding frames nobody is looking at.
-  useEffect(() => {
-    if (reduced || !wide) return;
+    if (reduced) return;
     const v = vidRef.current;
     if (!v) return;
     const sync = () => {
@@ -5093,89 +5084,110 @@ function AboutVideo() {
       if (play) v.play?.().catch(() => {}); else v.pause?.();
     };
     const io = new IntersectionObserver(([e]) => { inViewRef.current = e.isIntersecting; sync(); },
-      { rootMargin: "0px" });
-    io.observe(v);
+      { rootMargin: "200px 0px" });
+    if (wrapRef.current) io.observe(wrapRef.current);
     document.addEventListener("visibilitychange", sync);
     return () => { io.disconnect(); document.removeEventListener("visibilitychange", sync); };
-  }, [reduced, wide, near]);
-
-  const glowA = dark ? NEON_WHITE : NEON_PURPLE;
-  const glowB = dark ? NEON_PURPLE : NEON_GOLD;
-  const base = import.meta.env.BASE_URL || "/";
-  const poster = `${base}video/about-poster.webp`;
-
-  if (!wide) return null;
+  }, [reduced]);
 
   return (
-    <div ref={ref} aria-hidden="true" style={{
-      position: "relative", width: "clamp(260px, 28vw, 380px)", height: "clamp(260px, 28vw, 380px)",
-      flexShrink: 0, margin: "0 auto" }}>
-      {/* neon halo behind the circle — same language as the rosary glow */}
-      <div aria-hidden="true" style={{ position: "absolute", inset: "2%", borderRadius: "50%",
-        filter: "blur(34px)", background: `radial-gradient(circle, ${glowA}30 0%, transparent 68%)` }} />
-      <div aria-hidden="true" style={{ position: "absolute", inset: "8%", borderRadius: "50%",
-        filter: "blur(24px)", background: `radial-gradient(circle, ${glowB}34 0%, transparent 72%)` }} />
-      {/* circular media frame */}
-      <div style={{ position: "absolute", inset: 0, borderRadius: "50%", overflow: "hidden",
-        border: `1.5px solid ${dark ? "rgba(255,255,255,.22)" : "rgba(75,46,131,.28)"}`,
-        boxShadow: dark ? "0 20px 60px rgba(0,0,0,.45)" : "0 20px 50px rgba(75,46,131,.25)" }}>
-        {reduced ? (
-          <img src={poster} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : near ? (
-          <video ref={vidRef} muted loop playsInline autoPlay preload="none" poster={poster}
-            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}>
-            <source src={`${base}video/about-loop.mp4`} type="video/mp4" />
-          </video>
-        ) : (
-          <img src={poster} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        )}
-      </div>
-    </div>
-  );
-}
+    <section id="about" style={{ position: "relative", overflow: "hidden", background: INK }}>
+      {/* ── Cinematic video hero ─────────────────────────────────────── */}
+      <div ref={wrapRef} style={{ position: "relative", minHeight: "min(82vh, 760px)",
+        display: "flex", alignItems: "flex-end", overflow: "hidden" }}>
+        {/* background media */}
+        <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+          {reduced ? (
+            <img src={poster} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : (
+            <video ref={vidRef} muted loop playsInline autoPlay preload="none" poster={poster}
+              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}>
+              <source src={`${base}video/about-loop.mp4`} type="video/mp4" />
+            </video>
+          )}
+        </div>
+        {/* dark scrims for text legibility (left-weighted + bottom) */}
+        <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 1,
+          background: "linear-gradient(90deg, rgba(20,17,24,.86) 0%, rgba(20,17,24,.55) 42%, rgba(20,17,24,.15) 78%, rgba(20,17,24,.05) 100%)" }} />
+        <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 1,
+          background: "linear-gradient(180deg, rgba(20,17,24,.35) 0%, transparent 30%, transparent 55%, rgba(20,17,24,.8) 100%)" }} />
 
-function AboutSection({ data }) {
-  const about = data.about || seed.about;
-  return (
-    <Band id="about" lattice rosettes="right" decor="left" light lightTone="violet" lightAt="top-right">
-      <div style={{ display: "flex", gap: 40, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
-        <div style={{ flex: "1 1 420px", minWidth: 0 }}>
-          <SectionCopy data={data} sectionKey="about" />
-          {about.intro && (
-            <Reveal delay={200} variant="up" distance={18}>
-              <div style={{ maxWidth: 720, marginBottom: 34, color: "var(--text-muted)",
-                fontSize: 16.5, lineHeight: 1.7 }}>
-                <Markdown text={about.intro} style={{ margin: "0 0 12px" }} />
-              </div>
+        {/* Arabic calligraphy watermark, top-right */}
+        <div aria-hidden="true" style={{ position: "absolute", top: "clamp(24px,6vw,64px)",
+          right: "clamp(20px,5vw,72px)", zIndex: 2, color: "rgba(201,182,136,.55)",
+          fontSize: "clamp(22px,3vw,40px)", fontWeight: 600, letterSpacing: "1px",
+          textShadow: "0 2px 20px rgba(0,0,0,.5)", direction: "rtl" }}>
+          بَيْتُ الطُّلَّاب
+        </div>
+
+        {/* headline content, bottom-left */}
+        <div style={{ position: "relative", zIndex: 3, width: "100%", maxWidth: 1180,
+          margin: "0 auto", padding: "0 clamp(20px,5vw,64px) clamp(48px,8vw,96px)" }}>
+          <Reveal variant="up" distance={20}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 12, marginBottom: 22 }}>
+              <span style={{ width: 34, height: 1.5, background: GOLD, display: "inline-block" }} />
+              <span style={{ fontSize: "clamp(11px,1.4vw,13px)", fontWeight: 700,
+                letterSpacing: "2.4px", textTransform: "uppercase", color: "rgba(255,255,255,.82)" }}>
+                {copy.eyebrow}
+              </span>
+            </div>
+          </Reveal>
+          <Reveal variant="up" distance={24} delay={80}>
+            <h2 style={{ margin: 0, color: "#fff", fontWeight: 800,
+              fontSize: "clamp(44px,8vw,104px)", lineHeight: 1.0, letterSpacing: "-2px",
+              textShadow: "0 4px 40px rgba(0,0,0,.4)" }}>
+              {copy.title}
+            </h2>
+          </Reveal>
+          {copy.body && (
+            <Reveal variant="up" distance={18} delay={160}>
+              <p style={{ margin: "22px 0 0", color: "rgba(255,255,255,.86)", maxWidth: 560,
+                fontSize: "clamp(15px,2vw,19px)", lineHeight: 1.6 }}>
+                {copy.body}
+              </p>
             </Reveal>
           )}
         </div>
-        <Reveal delay={280} variant="up" distance={18}>
-          <AboutVideo />
-        </Reveal>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
-        gap: 18 }}>
-        {(about.pillars || []).map((p, n) => (
-          <Reveal key={p.id} delay={n * 85} variant="rise" distance={28} duration={DUR.slow}>
-            <div className="lift" style={{ ...card, padding: "26px 24px", height: "100%" }}>
-              <div style={{ width: 50, height: 58, position: "relative", display: "grid",
-                placeItems: "center", marginBottom: 14 }}>
-                <div style={{ position: "absolute", inset: 0 }}>
-                  <Arch w={50} h={58} spring={36} stroke="rgba(183,165,122,.5)" sw={1.2}
-                    fill="rgba(183,165,122,.15)" style={{ width: "100%", height: "100%" }} />
+
+      {/* ── Info cards row (from about.pillars) ──────────────────────── */}
+      <div style={{ position: "relative", zIndex: 4, background: INK,
+        padding: "0 clamp(20px,5vw,64px) clamp(48px,7vw,80px)", marginTop: "-1px" }}>
+        <div style={{ maxWidth: 1180, margin: "0 auto",
+          display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
+          {(about.pillars || []).map((p, n) => (
+            <Reveal key={p.id} delay={n * 80} variant="rise" distance={24}>
+              <div className="lift" style={{ height: "100%", padding: "22px 22px 24px",
+                borderRadius: 16, background: "rgba(255,255,255,.045)",
+                border: "1px solid rgba(255,255,255,.10)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+                  {progIcon(p.icon, GOLD)}
+                  <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "1.6px",
+                    textTransform: "uppercase", color: "rgba(201,182,136,.9)" }}>
+                    {p.title}
+                  </span>
                 </div>
-                <div style={{ position: "relative", marginTop: 8 }}>{progIcon(p.icon)}</div>
+                <div style={{ color: "#fff", fontSize: 15.5, fontWeight: 700, marginBottom: 6,
+                  lineHeight: 1.3 }}>{p.headline || p.title}</div>
+                <p style={{ margin: 0, color: "rgba(255,255,255,.68)", fontSize: 13.5,
+                  lineHeight: 1.6 }}>{p.text}</p>
               </div>
-              <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700,
-                color: "var(--accent)" }}>{p.title}</h3>
-              <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 14.5,
-                lineHeight: 1.65 }}>{p.text}</p>
+            </Reveal>
+          ))}
+        </div>
+
+        {/* Keep the intro paragraph below the cards so the "since 1968"
+            history isn't lost in the redesign. */}
+        {about.intro && (
+          <Reveal variant="up" distance={16}>
+            <div style={{ maxWidth: 760, margin: "clamp(40px,6vw,64px) auto 0", textAlign: "center",
+              color: "rgba(255,255,255,.72)", fontSize: 16, lineHeight: 1.75 }}>
+              <Markdown text={about.intro} style={{ margin: 0 }} />
             </div>
           </Reveal>
-        ))}
+        )}
       </div>
-    </Band>
+    </section>
   );
 }
 
