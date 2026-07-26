@@ -492,6 +492,44 @@ function useInView({ threshold = 0.15, rootMargin = "0px 0px -10% 0px", once = t
   return [ref, inView];
 }
 
+// Attaches touch-swipe navigation to any carousel/slideshow container.
+// Pure touch events (not pointer events) on purpose — this only fires on
+// actual touchscreens, so it can't interfere with mouse-driven interactions
+// a component already has (e.g. the Moments carousel's cursor-tilt effect,
+// which listens for pointermove/pointerleave). A swipe only counts once the
+// horizontal drag clears `threshold` px AND is clearly more horizontal than
+// vertical, so a normal vertical scroll over the carousel doesn't
+// accidentally trigger a page change.
+function useSwipe(ref, { onLeft, onRight, threshold = 40, enabled = true } = {}) {
+  const onLeftRef = useRef(onLeft), onRightRef = useRef(onRight);
+  onLeftRef.current = onLeft; onRightRef.current = onRight;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    let startX = 0, startY = 0, tracking = false;
+    const onStart = (e) => {
+      const t = e.touches?.[0]; if (!t) return;
+      startX = t.clientX; startY = t.clientY; tracking = true;
+    };
+    const onEnd = (e) => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches?.[0]; if (!t) return;
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        if (dx < 0) onLeftRef.current?.(); else onRightRef.current?.();
+      }
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchcancel", () => { tracking = false; }, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchend", onEnd);
+    };
+  }, [ref, threshold, enabled]);
+}
+
 /* Reveal — the workhorse entrance animation.
    variant: "up" | "down" | "left" | "right" | "fade" | "scale" | "blur"
    Composes transform + opacity only. */
@@ -3474,6 +3512,22 @@ function Gallery({ items }) {
     };
     const onPointerLeave = () => { tiltXTarget = 0; tiltYTarget = 0; startLoop(); };
 
+    // Touch swipe — steps one card per swipe, same as the arrow buttons.
+    // Pure touch events so it never fights the pointermove tilt above
+    // (that's mouse/hover-only on canHover devices).
+    let touchStartX = 0, touchStartY = 0, touchTracking = false;
+    const onTouchStart = (e) => {
+      const t = e.touches?.[0]; if (!t) return;
+      touchStartX = t.clientX; touchStartY = t.clientY; touchTracking = true;
+    };
+    const onTouchEnd = (e) => {
+      if (!touchTracking) return;
+      touchTracking = false;
+      const t = e.changedTouches?.[0]; if (!t) return;
+      const dx = t.clientX - touchStartX, dy = t.clientY - touchStartY;
+      if (n > 1 && Math.abs(dx) >= 36 && Math.abs(dx) > Math.abs(dy) * 1.3) rotate(dx < 0 ? 1 : -1);
+    };
+
     const startLoop = () => {
       if (raf || !inView || document.hidden) return;
       raf = requestAnimationFrame(tick);
@@ -3532,6 +3586,8 @@ function Gallery({ items }) {
       scene.addEventListener("pointermove", onPointerMove);
       scene.addEventListener("pointerleave", onPointerLeave);
     }
+    scene.addEventListener("touchstart", onTouchStart, { passive: true });
+    scene.addEventListener("touchend", onTouchEnd, { passive: true });
     const onVisibility = () => { if (!document.hidden) startLoop(); };
     document.addEventListener("visibilitychange", onVisibility);
 
@@ -3545,6 +3601,8 @@ function Gallery({ items }) {
         scene.removeEventListener("pointermove", onPointerMove);
         scene.removeEventListener("pointerleave", onPointerLeave);
       }
+      scene.removeEventListener("touchstart", onTouchStart);
+      scene.removeEventListener("touchend", onTouchEnd);
       document.removeEventListener("visibilitychange", onVisibility);
       rotateRef.current = () => {};
     };
@@ -3681,6 +3739,7 @@ function Gallery({ items }) {
           position: relative; flex: 1 1 auto; min-width: 0; max-width: 1000px;
           height: clamp(300px, 34vw, 480px);
           transform-style: preserve-3d; will-change: transform;
+          touch-action: pan-y;
         }
         .carousel-ground {
           position: absolute; left: 50%; top: 50%; width: 68%; height: 26%;
@@ -5042,15 +5101,17 @@ function ImageSlideshow({ images, alt }) {
   const [i, setI] = useState(0);
   const reduced = useReducedMotion();
   const n = images.length;
+  const boxRef = useRef(null);
   // Clamp if the array shrinks (e.g. an admin deletes the slide being shown).
   useEffect(() => { if (i > n - 1) setI(Math.max(0, n - 1)); }, [n, i]);
 
   const go = (dir) => setI((cur) => (cur + dir + n) % n);
   const cur = images[i];
+  useSwipe(boxRef, { onLeft: () => go(1), onRight: () => go(-1), enabled: n > 1 });
 
   return (
-    <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
-      aspectRatio: "4 / 3", position: "relative" }}>
+    <div ref={boxRef} className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
+      aspectRatio: "4 / 3", position: "relative", touchAction: n > 1 ? "pan-y" : undefined }}>
       {cur?.img
         ? <img key={cur.id ?? i} src={cur.img} alt={cur.caption || alt} loading="lazy" decoding="async"
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -5097,6 +5158,7 @@ function ImageSlideshow({ images, alt }) {
 }
 
 function PhotoLightbox({ photos, index, onClose, onNav }) {
+  const overlayRef = useRef(null);
   useEffect(() => {
     if (index === null) return;
     const onKey = (e) => {
@@ -5112,6 +5174,13 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
       document.body.style.overflow = prevOverflow;
     };
   }, [index, onClose, onNav]);
+  // Swipe anywhere on the overlay to browse — hook has to be called
+  // unconditionally (before the index===null early return below), so it
+  // self-disables via `enabled` instead of being skipped.
+  useSwipe(overlayRef, {
+    onLeft: () => onNav(1), onRight: () => onNav(-1),
+    enabled: index !== null && photos.length > 1,
+  });
 
   if (index === null) return null;
   const p = photos[index];
@@ -5125,10 +5194,11 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
   };
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="Photo viewer" className="modalBg"
+    <div ref={overlayRef} role="dialog" aria-modal="true" aria-label="Photo viewer" className="modalBg"
       onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,16,.88)",
-        backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20 }}>
+        backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20,
+        touchAction: "pan-y" }}>
       <button onClick={onClose} aria-label="Close"
         style={{ position: "absolute", top: 18, right: 18, width: 40, height: 40, borderRadius: "50%",
           border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
@@ -5180,6 +5250,7 @@ function BoardSection({ data }) {
   const [page, setPage] = useState(0);
   const [perPage, setPerPage] = useState(5);
   const reduced = useReducedMotion();
+  const trackWrapRef = useRef(null);
 
   // How many cards fit at once — recalculated on resize.
   useEffect(() => {
@@ -5202,6 +5273,15 @@ function BoardSection({ data }) {
   const openMember = members.find((m) => m.id === open);
 
   const switchTab = (t) => { if (t !== tab) setTab(t); };
+
+  // Swipe left/right on touch devices pages the carousel the same way the
+  // arrow buttons below do — most useful at perPage:1 (phones), where each
+  // member gets their own "page" to swipe through.
+  useSwipe(trackWrapRef, {
+    onLeft: () => setPage((p) => (p + 1) % pages),
+    onRight: () => setPage((p) => (p - 1 + pages) % pages),
+    enabled: pages > 1,
+  });
 
   return (
     <Band id="board" alt lattice rosettes="right" decor="left" light lightTone="rose" lightAt="bottom-left">
@@ -5236,8 +5316,9 @@ function BoardSection({ data }) {
         </div>
       ) : (
         <div style={{ position: "relative" }}>
-          {/* Track — translated by page, so it revolves rather than reflowing */}
-          <div style={{ overflow: "hidden" }}>
+          {/* Track — translated by page, so it revolves rather than reflowing.
+              Ref is what useSwipe listens on for touch drag. */}
+          <div ref={trackWrapRef} style={{ overflow: "hidden", touchAction: "pan-y" }}>
             <div style={{ display: "flex",
               transform: `translate3d(-${page * 100}%, 0, 0)`,
               transition: reduced ? "none" : `transform ${DUR.slow}ms ${EASE.outSoft}` }}>
