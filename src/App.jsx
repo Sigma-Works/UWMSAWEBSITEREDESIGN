@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
+import { createPortal } from "react-dom";
 import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl,
   subscribe, listSubscribers, logAdminChange, listAdminLog } from "./supabase";
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
@@ -2336,7 +2337,19 @@ function MasjidalPopup({ times, onClose }) {
     ? `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(id)}&color=000000`
     : "";
 
-  return (
+  // Rendered through a portal straight into <body>, deliberately outside
+  // the Nav <header> subtree. The header has an always-on backdrop-filter
+  // (for the blur/frosted-glass look), and backdrop-filter — like
+  // transform and filter — creates a "containing block" for any
+  // position:fixed descendant. That silently meant this popup's
+  // fixed/inset:0 was being measured against the ~70px-tall header
+  // instead of the actual viewport: its overlay only ever covered the
+  // header's own box, so the card (and its darkened backdrop) rendered
+  // there and nowhere else, leaving the rest of the page — including the
+  // home hero underneath — completely uncovered instead of dimmed. No
+  // amount of z-index or padding tuning fixes that; escaping the subtree
+  // entirely via createPortal does.
+  return createPortal((
     <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,14,.62)",
         backdropFilter: "blur(4px)",
@@ -2425,7 +2438,7 @@ function MasjidalPopup({ times, onClose }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 /* Minimal allowlist sanitizer for an admin-pasted <iframe> embed: strips
