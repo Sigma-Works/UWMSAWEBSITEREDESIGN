@@ -1813,8 +1813,12 @@ function StyleTag() {
          Reduced-motion users never get this class in the first place (see
          Eyebrow), so there's no separate override needed here. ── */
       .shiny-text {
+        /* --shiny-base defaults to the gold used on eyebrow labels;
+           callers (e.g. the white hero headline) override it inline via
+           style={{ "--shiny-base": "#fff" }} so the same sweep works on
+           any base color without a second copy of this rule. */
         background-image: linear-gradient(100deg,
-          ${GOLD} 35%, ${NEON_PURPLE} 50%, ${GOLD} 65%);
+          var(--shiny-base, ${GOLD}) 35%, ${NEON_PURPLE} 50%, var(--shiny-base, ${GOLD}) 65%);
         background-size: 240% 100%;
         background-position: 200% 0;
         -webkit-background-clip: text;
@@ -2801,9 +2805,15 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
               {data.hero.kicker ?? seed.hero.kicker}
             </span>
           </div>
-          <h1 style={{ margin: 0, color: "#fff", fontWeight: 800,
+          {/* Shiny sweep on the main headline too, not just the eyebrow
+              labels — white base so it still reads bright at rest, with
+              the same purple highlight passing through it on a loop.
+              Falls back to plain white for reduced-motion visitors. */}
+          <h1 className={reduced ? "" : "shiny-text"}
+            style={{ margin: 0, color: reduced ? "#fff" : undefined, fontWeight: 800,
             fontSize: "clamp(34px,6vw,68px)", lineHeight: 1.05,
-            textShadow: "0 2px 30px rgba(0,0,0,.4)" }}>
+            "--shiny-base": "#fff",
+            filter: "drop-shadow(0 2px 30px rgba(0,0,0,.4))" }}>
             {data.hero.title ?? seed.hero.title}
           </h1>
           <p style={{ marginTop: 20, color: "rgba(255,255,255,.86)",
@@ -2848,7 +2858,15 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             bonus, the arch below (which measures this wrapper's real
             width) now hugs it correctly on mobile too instead of sizing
             itself for the old fixed 560px. */}
-        <div ref={rosetteWrapRef} style={{ position: "absolute", top: "5%", left: "50%",
+        {/* top uses max(140px, 5%) instead of a bare 5% — on a shorter
+            section (fewer announcements) 5% alone could land at well
+            under 56px (the padding useEnclosingBox pads the arch's box
+            by), pushing the arch's measured top negative and clipping its
+            peak against this section's own overflow:hidden edge, and
+            visually reading as if it bled into the cherry-blossom hero
+            above. The 140px floor guarantees real breathing room under
+            the sticky nav no matter how short the section is. */}
+        <div ref={rosetteWrapRef} style={{ position: "absolute", top: "max(140px, 5%)", left: "50%",
           width: "clamp(230px, 52vw, 560px)", height: "clamp(230px, 52vw, 560px)",
           marginLeft: "calc(clamp(230px, 52vw, 560px) / -2)",
           pointerEvents: "none", zIndex: 0 }}>
@@ -2879,7 +2897,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             on separate elements — same reason as TiltWrap — otherwise the
             animation's own `transform` write would knock the mark off its
             centered position. ── */}
-        <div style={{ position: "absolute", left: "50%", top: "calc(5% + 152px)",
+        <div style={{ position: "absolute", left: "50%", top: "calc(max(140px, 5%) + 152px)",
           transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
           <div className="hero-logo-mark" style={{
             position: "relative", opacity: 0,
@@ -3013,7 +3031,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             below the announcement cards, while the cards' wrapper only has
             24px of paddingBottom — without this gap the arch's bottom edge
             ran a good ~30px into the band below it. */}
-        <div style={{ position: "relative", marginTop: 40 }}>
+        <div style={{ position: "relative", marginTop: 56 }}>
           <GirihBand color="rgba(183,165,122,.45)" height={54} opacity={1} unit={54} />
         </div>
         <style>{`
@@ -3355,6 +3373,12 @@ function PatternField() {
    you scroll" is here. */
 function Gallery({ items }) {
   const reduced = useReducedMotion();
+  // Only used for the "Turn on animations" escape hatch in the
+  // reduced-motion fallback below — lets someone who flipped the site's
+  // own Settings > Reduce motion toggle (it persists in localStorage, so
+  // it's easy to forget it's on) get the 3D carousel back with one click,
+  // without touching anyone whose *OS* has reduced motion turned on.
+  const { motionOff, setMotionOff } = useMotionPrefs();
   const wrapRef = useRef(null);
   const stickyRef = useRef(null);
   const sceneRef = useRef(null);
@@ -3538,17 +3562,36 @@ function Gallery({ items }) {
   // fully visible immediately, no spinning ring at all.
   if (reduced) {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
-        gap: "clamp(14px,2.6vw,26px)" }}>
-        {list.map((it, i) => (
-          <div key={it.id ?? i} style={{ borderRadius: 16,
-            overflow: "hidden", aspectRatio: "4 / 3", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
-            {it.img
-              ? <img src={it.img} alt={it.caption || ""} loading="lazy"
-                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-              : <div style={{ width: "100%", height: "100%", background: grad(i) }} />}
+      <div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
+          gap: "clamp(14px,2.6vw,26px)" }}>
+          {list.map((it, i) => (
+            <div key={it.id ?? i} style={{ borderRadius: 16,
+              overflow: "hidden", aspectRatio: "4 / 3", boxShadow: "0 8px 24px rgba(0,0,0,.28)" }}>
+              {it.img
+                ? <img src={it.img} alt={it.caption || ""} loading="lazy"
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                : <div style={{ width: "100%", height: "100%", background: grad(i) }} />}
+            </div>
+          ))}
+        </div>
+        {/* Only shown when THIS SITE'S OWN "Reduce motion" toggle (Settings
+            menu) is what's causing the grid — never for a visitor whose OS
+            has reduced motion turned on, since that's an accessibility
+            choice this site shouldn't second-guess. The in-site toggle is
+            easy to flip on while poking around Settings and then forget
+            about, since it persists in localStorage indefinitely. */}
+        {motionOff && (
+          <div style={{ marginTop: 16, textAlign: "center" }}>
+            <button onClick={() => setMotionOff(false)} className="btn"
+              style={{ display: "inline-flex", alignItems: "center", gap: 7,
+                padding: "10px 18px", borderRadius: 999, border: "1px solid var(--border-strong)",
+                background: "var(--surface)", color: "var(--accent)", fontWeight: 700,
+                fontSize: 13.5, cursor: "pointer", fontFamily: "inherit" }}>
+              <Sparkles size={14} /> Reduce motion is on for this site — turn it off to see the photo carousel
+            </button>
           </div>
-        ))}
+        )}
       </div>
     );
   }
@@ -4820,6 +4863,10 @@ function DonateSection({ data }) {
 /* ---------- ISLAMIC HOUSE ---------- */
 function IslamicHouseSection({ data }) {
   const h = data.islamicHouse || seed.islamicHouse;
+  // Index into h.photos currently open in the lightbox, or null when closed.
+  const [lightbox, setLightbox] = useState(null);
+  const photos = h.photos || [];
+  const navLightbox = (dir) => setLightbox((i) => (i === null ? null : (i + dir + photos.length) % photos.length));
   return (
     <Band id="islamic-house" lattice rosettes="both" decor="right" light lightTone="gold" lightAt="bottom-right">
       {/* tasbih swaying quietly in the margin */}
@@ -4939,26 +4986,112 @@ function IslamicHouseSection({ data }) {
         </div>
       </div>
 
-      {/* Photos */}
-      {(h.photos || []).length > 0 && (
+      {/* Photos — click any thumbnail to browse the full set in a
+          lightbox with prev/next arrows (PhotoLightbox below). Admins can
+          add as many as they like from the Islamic House tab; there's no
+          cap on the array, the grid just wraps. */}
+      {photos.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))",
           gap: 14, marginTop: 26 }}>
-          {h.photos.map((p, n) => (
+          {photos.map((p, n) => (
             <Reveal key={p.id ?? n} delay={n * 70} variant="scale" distance={20}>
-              <div className="zoomable" style={{ ...card, padding: 0, overflow: "hidden",
-                aspectRatio: "4 / 3" }}>
+              <button type="button" onClick={() => setLightbox(n)} className="zoomable"
+                aria-label={p.caption ? `View photo: ${p.caption}` : `View photo ${n + 1} of ${photos.length}`}
+                style={{ ...card, padding: 0, overflow: "hidden", aspectRatio: "4 / 3",
+                  border: "none", cursor: "pointer", display: "block", width: "100%",
+                  font: "inherit", color: "inherit" }}>
                 {p.img
                   ? <img src={p.img} alt={p.caption || ""} loading="lazy"
                       style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                   : <div style={{ width: "100%", height: "100%",
                       background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }} />}
-              </div>
+              </button>
             </Reveal>
           ))}
         </div>
       )}
+      <PhotoLightbox photos={photos} index={lightbox} onClose={() => setLightbox(null)} onNav={navLightbox} />
       <style>{`@media (max-width:880px){.house-grid{grid-template-columns:1fr !important;}}`}</style>
     </Band>
+  );
+}
+
+/* Full-screen viewer for a photo array — prev/next arrow buttons plus
+   arrow-key and swipe-free keyboard navigation, Escape/backdrop to close.
+   Generic enough to reuse anywhere a plain photo array needs browsing
+   (currently just the Islamic House photos, which have no carousel of
+   their own the way the home page Moments gallery does). */
+function PhotoLightbox({ photos, index, onClose, onNav }) {
+  useEffect(() => {
+    if (index === null) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") onNav(-1);
+      else if (e.key === "ArrowRight") onNav(1);
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [index, onClose, onNav]);
+
+  if (index === null) return null;
+  const p = photos[index];
+  if (!p) return null;
+
+  const arrowBtn = {
+    position: "absolute", top: "50%", transform: "translateY(-50%)",
+    width: 44, height: 44, borderRadius: "50%", border: "1px solid rgba(255,255,255,.28)",
+    background: "rgba(20,17,24,.72)", color: "#fff", display: "grid", placeItems: "center",
+    cursor: "pointer",
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Photo viewer" className="modalBg"
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,16,.88)",
+        backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20 }}>
+      <button onClick={onClose} aria-label="Close"
+        style={{ position: "absolute", top: 18, right: 18, width: 40, height: 40, borderRadius: "50%",
+          border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
+          display: "grid", placeItems: "center", cursor: "pointer" }}>
+        <X size={20} />
+      </button>
+      {photos.length > 1 && (
+        <button onClick={(e) => { e.stopPropagation(); onNav(-1); }} aria-label="Previous photo"
+          style={{ ...arrowBtn, left: 14 }}>
+          <ChevronLeft size={22} />
+        </button>
+      )}
+      <div onClick={(e) => e.stopPropagation()} className="modalIn"
+        style={{ maxWidth: "min(88vw, 900px)", maxHeight: "82vh", display: "grid", gap: 10 }}>
+        {p.img
+          ? <img src={p.img} alt={p.caption || ""} style={{ maxWidth: "100%", maxHeight: "72vh",
+              borderRadius: 14, boxShadow: "0 20px 60px rgba(0,0,0,.5)", objectFit: "contain",
+              display: "block", margin: "0 auto" }} />
+          : <div style={{ width: "min(88vw, 700px)", height: "60vh", borderRadius: 14,
+              background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }} />}
+        {p.caption && (
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,.85)", fontSize: 14.5, fontWeight: 600 }}>
+            {p.caption}
+          </div>
+        )}
+        {photos.length > 1 && (
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,.5)", fontSize: 12.5 }}>
+            {index + 1} / {photos.length}
+          </div>
+        )}
+      </div>
+      {photos.length > 1 && (
+        <button onClick={(e) => { e.stopPropagation(); onNav(1); }} aria-label="Next photo"
+          style={{ ...arrowBtn, right: 14 }}>
+          <ChevronRight size={22} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -4970,14 +5103,14 @@ function BoardSection({ data }) {
   const [tab, setTab] = useState("current");
   const [open, setOpen] = useState(null);   // id of expanded member
   const [page, setPage] = useState(0);
-  const [perPage, setPerPage] = useState(4);
+  const [perPage, setPerPage] = useState(5);
   const reduced = useReducedMotion();
 
   // How many cards fit at once — recalculated on resize.
   useEffect(() => {
     const calc = () => {
       const w = window.innerWidth;
-      setPerPage(w < 560 ? 1 : w < 860 ? 2 : w < 1120 ? 3 : 4);
+      setPerPage(w < 560 ? 1 : w < 860 ? 2 : w < 1120 ? 3 : 5);
     };
     calc();
     window.addEventListener("resize", calc, { passive: true });
@@ -5577,7 +5710,7 @@ function Footer({ onAdmin, data, onNav }) {
             gap: 16, flexWrap: "wrap", fontSize: 12.5 }}>
             <div>
               © {new Date().getFullYear()} Muslim Students Association at the University of
-              Washington. A registered UW Registered Student Organization.
+              Washington. A UW Registered Student Organization.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
               <a href={`mailto:${contact.email}`} className="footlink">{contact.email}</a>
@@ -6291,15 +6424,22 @@ function Editor({ tab, data, setData }) {
         <div style={{ display: "grid", gap: 12 }}>
           {photos.map((p, i) => (
             <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
+              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
               <ImageField label="Photo" value={p.img || ""} folder="house"
                 onChange={(url) => editPh(i, { img: url })} />
               <div><label style={lbl}>Caption (optional)</label>
                 <input style={inpSm} value={p.caption || ""}
                   onChange={(e) => editPh(i, { caption: e.target.value })} /></div>
-              <button onClick={() => setH({ photos: photos.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete photo"><Trash2 size={15} /></button>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button onClick={() => i > 0 && setH({ photos: arraySwap(photos, i, i - 1) })}
+                  disabled={i === 0} style={i === 0 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo up"><ArrowUp size={14} /></button>
+                <button onClick={() => i < photos.length - 1 && setH({ photos: arraySwap(photos, i, i + 1) })}
+                  disabled={i === photos.length - 1} style={i === photos.length - 1 ? moveBtnOff : moveBtn}
+                  aria-label="Move photo down"><ArrowDown size={14} /></button>
+                <button onClick={() => setH({ photos: photos.filter((_, n) => n !== i) })}
+                  style={delBtn} aria-label="Delete photo"><Trash2 size={15} /></button>
+              </div>
             </div>
           ))}
         </div>
