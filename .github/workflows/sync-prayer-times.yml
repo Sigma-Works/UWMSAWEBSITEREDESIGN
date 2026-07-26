@@ -1,0 +1,26 @@
+name: Sync prayer times
+
+# Runs server-side (GitHub's servers, not a visitor's browser), so CORS
+# never comes into play — it fetches the live AthanPlus feed directly and
+# writes today's times into Supabase, which is what the nav countdown
+# falls back to reading. 08:00 UTC is ~00:00-01:00 Pacific depending on
+# daylight saving, i.e. shortly after the Pacific date rolls over and
+# safely before even the earliest Fajr of the year, so the countdown has
+# the correct day's times for the whole day.
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Sync today's prayer times into Supabase
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/sync-prayer-times.mjs
