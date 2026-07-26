@@ -2176,9 +2176,82 @@ function getSeattleNowMinutes(date) {
   return hour * 60 + get("minute") + get("second") / 60;
 }
 
+// Pulls today's actual "STARTS" times straight out of the same live
+// AthanPlus widget the popup already embeds, so the nav countdown tracks
+// reality instead of manually-entered fields that drift out of date
+// (prayer times shift a few minutes every day). Deliberately tag-strips
+// rather than parsing specific HTML structure — Masjidal/AthanPlus don't
+// publish a documented API or markup contract for this widget, so
+// anchoring on the visible "Fajr ... 3:46 AM" text is more likely to
+// survive a styling change on their end than matching specific classes
+// would be. Only takes the FIRST "PRAYER TIMINGS" block in the page
+// (today's), since the widget lists a full week.
+function parseAthanPlusTimes(html) {
+  const text = String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const secondHeading = text.toUpperCase().indexOf("PRAYER TIMINGS", text.toUpperCase().indexOf("PRAYER TIMINGS") + 1);
+  const todayText = secondHeading === -1 ? text : text.slice(0, secondHeading);
+  const out = {};
+  for (const name of PRAYER_ORDER) {
+    // e.g. "Fajr 3:46 AM 4:30 AM" — the first time is the start (adhan);
+    // the second (bold, "Iqamah") isn't what the countdown should track.
+    const m = todayText.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
+    if (m) out[name] = m[1].toUpperCase();
+  }
+  return out;
+}
+
+// Fetched at most once an hour (prayer times don't change faster than
+// that) and only when a masjidalId is actually configured, matching the
+// existing "live widget vs. manual times" gating everywhere else on the
+// site. Any failure — CORS not permitted from this origin, the endpoint
+// being down, the page's markup no longer matching — is swallowed and
+// simply leaves liveTimes empty, so callers fall back to the manual
+// fields instead of breaking the countdown entirely.
+function useLiveMasjidalTimes(masjidId) {
+  const [liveTimes, setLiveTimes] = useState(null);
+
+  useEffect(() => {
+    const id = (masjidId || "").trim();
+    if (!id) { setLiveTimes(null); return; }
+    let cancelled = false;
+    const load = async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const url = `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(id)}&color=000000`;
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`bad response: ${res.status}`);
+        const html = await res.text();
+        const parsed = parseAthanPlusTimes(html);
+        if (!cancelled && Object.keys(parsed).length > 0) setLiveTimes(parsed);
+      } catch {
+        // CORS block, network hiccup, unexpected markup, etc. — stay
+        // silent and let the manual-times fallback handle it.
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    load();
+    const hourly = setInterval(load, 60 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(hourly); };
+  }, [masjidId]);
+
+  return liveTimes;
+}
+
 function NextPrayerTimer({ times, compact = false }) {
   const [now, setNow] = useState(() => new Date());
   const [open, setOpen] = useState(false);
+  const liveTimes = useLiveMasjidalTimes(times?.masjidalId);
+  // Live-fetched values win when present; anything the fetch didn't
+  // cover (or couldn't get at all) falls back to the manual fields.
+  const effectiveTimes = React.useMemo(() => ({ ...times, ...liveTimes }), [times, liveTimes]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -2186,18 +2259,18 @@ function NextPrayerTimer({ times, compact = false }) {
   }, []);
 
   // Build today's prayer schedule in minutes, sorted chronologically —
-  // memoized on the times object. The sort is defensive: PRAYER_ORDER's
+  // memoized on the merged times object. The sort is defensive: PRAYER_ORDER's
   // names are already in time order, but an admin typo (e.g. an AM/PM
   // slip on one prayer) shouldn't be able to make the "next prayer" search
   // below skip over an earlier time just because it appears later in the
   // array.
   const schedule = React.useMemo(() => {
-    if (!times) return [];
+    if (!effectiveTimes) return [];
     return PRAYER_ORDER
-      .map((name) => ({ name, mins: parsePrayerToMinutes(times[name]) }))
+      .map((name) => ({ name, mins: parsePrayerToMinutes(effectiveTimes[name]) }))
       .filter((p) => p.mins != null)
       .sort((a, b) => a.mins - b.mins);
-  }, [times]);
+  }, [effectiveTimes]);
 
   if (schedule.length === 0) return null;
 
@@ -2278,10 +2351,23 @@ function MasjidalPopup({ times, onClose }) {
         // card could grow past the viewport and get centered half off the
         // top edge — which is what was making the close button
         // unreachable, not the announcement bar itself.
-        display: "flex", justifyContent: "center", alignItems: "center",
-        padding: "24px 16px" }}>
+        display: "flex", justifyContent: "center",
+        padding: "24px 16px",
+        // Belt-and-suspenders: the card's own max-height (below) should
+        // always keep it within the viewport, but if it somehow doesn't
+        // (an embedded widget rendering taller than expected, a viewport
+        // unit quirk in some browser), letting the OVERLAY itself scroll
+        // means the header/close button can still be reached by scrolling
+        // up, instead of being permanently stuck off-screen with no way
+        // back to it. Deliberately NOT using alignItems:"center" here —
+        // centering the cross axis that way clips whatever's "before
+        // center" the instant content overflows, with no way to scroll up
+        // to reach it (a well-known flexbox gotcha). `margin: auto 0` on
+        // the card itself (below) gets the same centering while degrading
+        // to plain top alignment — no clipping — once it doesn't fit.
+        overflowY: "auto", overscrollBehavior: "contain" }}>
       <div className="masjidal-card" onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
-        display: "flex", flexDirection: "column",
+        display: "flex", flexDirection: "column", flexShrink: 0, margin: "auto 0",
         overflow: "hidden", position: "relative", padding: 0 }}>
         <style>{`
           .masjidal-card {
