@@ -2153,6 +2153,29 @@ function parsePrayerToMinutes(str) {
   return h * 60 + min;
 }
 
+// MSA is in Seattle, and every prayer time on the site is a Seattle local
+// time — but `new Date().getHours()` reads the VISITOR's device clock,
+// which is only correct by coincidence. A visitor whose laptop/phone is
+// set to a different timezone (traveling, a device that hasn't picked up
+// the local zone, a browser override, etc.) got a countdown computed
+// against the wrong "now" entirely — sometimes off by hours, which is the
+// "wrong countdown" this fixes. Reading the wall-clock time via an
+// explicit America/Los_Angeles Intl formatter (rather than a fixed UTC
+// offset) also means it stays correct across the PST/PDT daylight-saving
+// switch automatically.
+function getSeattleNowMinutes(date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(date);
+  const get = (type) => Number(parts.find((p) => p.type === type)?.value || 0);
+  // Midnight in the 24h format above can come back as "24" instead of "00"
+  // in some engines — normalize so it doesn't throw the minute count off
+  // by a full day.
+  const hour = get("hour") % 24;
+  return hour * 60 + get("minute") + get("second") / 60;
+}
+
 function NextPrayerTimer({ times, compact = false }) {
   const [now, setNow] = useState(() => new Date());
   const [open, setOpen] = useState(false);
@@ -2162,17 +2185,23 @@ function NextPrayerTimer({ times, compact = false }) {
     return () => clearInterval(id);
   }, []);
 
-  // Build today's prayer schedule in minutes; memoized on the times object.
+  // Build today's prayer schedule in minutes, sorted chronologically —
+  // memoized on the times object. The sort is defensive: PRAYER_ORDER's
+  // names are already in time order, but an admin typo (e.g. an AM/PM
+  // slip on one prayer) shouldn't be able to make the "next prayer" search
+  // below skip over an earlier time just because it appears later in the
+  // array.
   const schedule = React.useMemo(() => {
     if (!times) return [];
     return PRAYER_ORDER
       .map((name) => ({ name, mins: parsePrayerToMinutes(times[name]) }))
-      .filter((p) => p.mins != null);
+      .filter((p) => p.mins != null)
+      .sort((a, b) => a.mins - b.mins);
   }, [times]);
 
   if (schedule.length === 0) return null;
 
-  const nowMins = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  const nowMins = getSeattleNowMinutes(now);
   let next = schedule.find((p) => p.mins > nowMins);
   let crossesMidnight = false;
   if (!next) { next = schedule[0]; crossesMidnight = true; } // wrap to tomorrow's Fajr
@@ -2238,14 +2267,34 @@ function MasjidalPopup({ times, onClose }) {
     <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,14,.62)",
         backdropFilter: "blur(4px)",
-        // Center the popup with top padding clearing the fixed nav. The box
-        // caps its own height and scrolls its body internally, so it's never
-        // taller than the screen and the header/X is always visible.
+        // Symmetric padding, so flexbox centers the card on the actual
+        // middle of the screen. This used to reserve 88px up top
+        // specifically "to clear the nav" — unnecessary (and wrong): the
+        // overlay is z-index 200, already well above the nav/announcement
+        // bar's 50/51, so it renders over them regardless of padding. That
+        // lopsided padding just pushed the card below true center, and
+        // combined with a max-height that silently stopped applying in any
+        // browser without `dvh` support (see .masjidal-card below), the
+        // card could grow past the viewport and get centered half off the
+        // top edge — which is what was making the close button
+        // unreachable, not the announcement bar itself.
         display: "flex", justifyContent: "center", alignItems: "center",
-        padding: "88px 16px 24px" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
-        maxHeight: "calc(100dvh - 112px)", display: "flex", flexDirection: "column",
+        padding: "24px 16px" }}>
+      <div className="masjidal-card" onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
+        display: "flex", flexDirection: "column",
         overflow: "hidden", position: "relative", padding: 0 }}>
+        <style>{`
+          .masjidal-card {
+            /* vh first as a universally-supported fallback: an engine that
+               doesn't understand dvh treats the second declaration as
+               invalid and ignores it, keeping this one, instead of
+               dropping max-height entirely. dvh then overrides it where
+               supported, since it accounts for mobile browsers' address
+               bar collapsing/expanding, which plain vh doesn't. */
+            max-height: calc(100vh - 48px);
+            max-height: calc(100dvh - 48px);
+          }
+        `}</style>
         {/* fixed header (doesn't scroll) — X always visible */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "14px 18px", borderBottom: "1px solid var(--border)",
