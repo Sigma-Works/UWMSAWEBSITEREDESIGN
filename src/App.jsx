@@ -2212,28 +2212,16 @@ function MasjidalPopup({ times, onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
-    // Lock body scroll without losing the reader's place: pin the body at
-    // its current scroll offset, then restore it on close. (Plain
-    // overflow:hidden can make the page jump to the top on some browsers,
-    // which is disorienting when the popup is opened from far down the page.)
-    const scrollY = window.scrollY;
-    const prev = {
-      position: document.body.style.position,
-      top: document.body.style.top,
-      width: document.body.style.width,
-      overflow: document.body.style.overflow,
-    };
-    document.body.style.position = "fixed";
-    document.body.style.top = `-${scrollY}px`;
-    document.body.style.width = "100%";
+    // Prevent the background from scrolling while the popup is open — but do
+    // NOT use position:fixed on <body> (that reflows the page under the fixed
+    // nav and broke the layout). Just hide overflow; the page keeps its
+    // scroll position, and the overlay below sits on top at a fixed viewport
+    // position with its own internal scroll.
+    const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.body.style.position = prev.position;
-      document.body.style.top = prev.top;
-      document.body.style.width = prev.width;
-      document.body.style.overflow = prev.overflow;
-      window.scrollTo(0, scrollY);
+      document.body.style.overflow = prevOverflow;
     };
   }, [onClose]);
 
@@ -2250,21 +2238,18 @@ function MasjidalPopup({ times, onClose }) {
     <div role="dialog" aria-modal="true" aria-label="Prayer times" onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,14,.62)",
         backdropFilter: "blur(4px)",
-        // The overlay itself scrolls and aligns the popup to the top, so the
-        // header (with the close button) is always reachable — even on short
-        // screens or when the widget iframe is tall. Centering a too-tall
-        // dialog used to push the X off-screen with body scroll locked,
-        // trapping the user. overscrollBehavior stops scroll chaining back
-        // to the (locked) page.
-        overflowY: "auto", overscrollBehavior: "contain",
-        display: "flex", justifyContent: "center", alignItems: "flex-start",
-        padding: "max(20px, 5vh) 16px" }}>
+        // Center the popup with top padding clearing the fixed nav. The box
+        // caps its own height and scrolls its body internally, so it's never
+        // taller than the screen and the header/X is always visible.
+        display: "flex", justifyContent: "center", alignItems: "center",
+        padding: "88px 16px 24px" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
-        overflow: "hidden", position: "relative", padding: 0, margin: "auto" }}>
-        {/* sticky header so the close button stays put even if the body is tall */}
+        maxHeight: "calc(100dvh - 112px)", display: "flex", flexDirection: "column",
+        overflow: "hidden", position: "relative", padding: 0 }}>
+        {/* fixed header (doesn't scroll) — X always visible */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "14px 18px", borderBottom: "1px solid var(--border)",
-          position: "sticky", top: 0, background: "var(--surface)", zIndex: 1 }}>
+          background: "var(--surface)", flexShrink: 0 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
             <Clock size={17} color="var(--accent)" /> Prayer Times
           </div>
@@ -2272,7 +2257,9 @@ function MasjidalPopup({ times, onClose }) {
             <X size={17} color="var(--accent)" />
           </button>
         </div>
-        <div style={{ padding: (cleanEmbed || widgetSrc) ? 0 : 18 }}>
+        {/* scrollable body */}
+        <div style={{ overflowY: "auto", overscrollBehavior: "contain",
+          padding: (cleanEmbed || widgetSrc) ? 0 : 18 }}>
           {cleanEmbed ? (
             <div style={{ width: "100%" }} dangerouslySetInnerHTML={{ __html: cleanEmbed }} />
           ) : widgetSrc ? (
@@ -5105,21 +5092,27 @@ function AboutSection({ data }) {
   const base = import.meta.env.BASE_URL || "/";
   const poster = `${base}video/about-poster.webp`;
 
-  // Autoplay the background video only while it's on-screen and the tab is
-  // visible — pause otherwise so a looping clip never burns CPU/battery.
+  // Play the intro video once when it first scrolls into view, then stop on
+  // its last frame (looping looked bad — the cut back to frame 1 was
+  // obvious). Pause if the tab is hidden mid-play; don't restart once done.
+  const playedRef = useRef(false);
   useEffect(() => {
     if (reduced) return;
     const v = vidRef.current;
     if (!v) return;
     const sync = () => {
-      const play = inViewRef.current && !document.hidden;
-      if (play) v.play?.().catch(() => {}); else v.pause?.();
+      if (playedRef.current) return;              // already played through once
+      const visible = inViewRef.current && !document.hidden;
+      if (visible) v.play?.().catch(() => {}); else v.pause?.();
     };
+    const onEnded = () => { playedRef.current = true; };  // freeze on last frame
     const io = new IntersectionObserver(([e]) => { inViewRef.current = e.isIntersecting; sync(); },
       { rootMargin: "200px 0px" });
     if (wrapRef.current) io.observe(wrapRef.current);
     document.addEventListener("visibilitychange", sync);
-    return () => { io.disconnect(); document.removeEventListener("visibilitychange", sync); };
+    v.addEventListener("ended", onEnded);
+    return () => { io.disconnect(); document.removeEventListener("visibilitychange", sync);
+      v.removeEventListener("ended", onEnded); };
   }, [reduced]);
 
   return (
@@ -5132,7 +5125,7 @@ function AboutSection({ data }) {
           {reduced ? (
             <img src={poster} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
-            <video ref={vidRef} muted loop playsInline autoPlay preload="none" poster={poster}
+            <video ref={vidRef} muted playsInline autoPlay preload="none" poster={poster}
               style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}>
               <source src={`${base}video/about-loop.mp4`} type="video/mp4" />
             </video>
