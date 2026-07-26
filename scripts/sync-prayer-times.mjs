@@ -68,6 +68,20 @@ async function supabaseRequest(path, init = {}) {
 // specific HTML structure, since Masjidal/AthanPlus don't publish a
 // markup contract for this widget and a styling change on their end is
 // far more likely than the visible prayer names/time format changing.
+//
+// The page lists a full week, one "PRAYER TIMINGS" block per day, but
+// there's no need to isolate "today's" block at all: today's block is
+// always first in document order, so a plain (non-global) match on the
+// whole page already lands on today's occurrence of each prayer name —
+// String.match() returns the first hit. An earlier version tried to
+// find where today's block "ends" by locating the *second* occurrence of
+// the heading text "PRAYER TIMINGS" and slicing everything before it —
+// which broke in production because the page's own <title> tag
+// ("Masjidal - Prayer timings") also contains that phrase, throwing the
+// occurrence count off by one and slicing away the real table data
+// instead of the days after it. Matching directly against the full text
+// sidesteps that fragility entirely — one less thing that can drift out
+// of sync with the page's own unrelated copy.
 function parseAthanPlusTimes(html) {
   const text = String(html)
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -76,12 +90,9 @@ function parseAthanPlusTimes(html) {
     .replace(/&nbsp;/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const upper = text.toUpperCase();
-  const secondHeading = upper.indexOf("PRAYER TIMINGS", upper.indexOf("PRAYER TIMINGS") + 1);
-  const todayText = secondHeading === -1 ? text : text.slice(0, secondHeading);
   const out = {};
   for (const name of PRAYER_ORDER) {
-    const m = todayText.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
+    const m = text.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
     if (m) out[name] = m[1].toUpperCase();
   }
   return out;
