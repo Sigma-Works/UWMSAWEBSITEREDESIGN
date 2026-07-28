@@ -6123,135 +6123,120 @@ function ProgramCard({ program: p }) {
    shows the ordering channels (online / da'wah table / DM Instagram). */
 function MerchSection({ data, onNav }) {
   const m = data.merch || seed.merch;
+  const base = import.meta.env.BASE_URL || "/";
+  const storeUrl = m.orderUrl || MERCH_URL;
+  // Admin-added items override the built-in showcase; otherwise show the
+  // designed "coming soon" reveal with the hoodie renders baked in.
   const items = m.items || [];
-  const channels = m.channels || [];
 
-  const channelIcon = (k) => {
-    const p = { size: 22, color: "#fff" };
-    return { link: <ShoppingBag {...p} />, instagram: <Instagram {...p} />,
-      table: <MapPin {...p} /> }[k] || <Link2 {...p} />;
-  };
-  const channelBg = (k) => ({
-    link: `linear-gradient(135deg,${PURPLE},${PURPLE_D})`,
-    instagram: "linear-gradient(135deg,#833AB4,#FD1D1D,#FCB045)",
-    table: `linear-gradient(135deg,${GOLD_D},${GOLD})`,
-  }[k] || PURPLE);
+  const hoodies = [
+    { key: "brown", img: `${base}merch/hoodie-brown.webp`, name: "Taqdeer Hoodie", note: "Sandstone · pullover", word: "تَقْدِير", en: "decree" },
+    { key: "black", img: `${base}merch/hoodie-black.webp`, name: "Tawakkul Zip-Up", note: "Black · full-zip", word: "تَوَكُّل", en: "trust" },
+  ];
 
   return (
-    <Band id="merch" lattice rosettes="both" decor="both" light lightTone="gold" lightAt="top-right">
-      <div style={{ textAlign: "center", maxWidth: 720, margin: "0 auto 34px" }}>
+    <Band id="merch" lattice rosettes="both" decor="both" light lightTone="rose" lightAt="top-right"
+      floats={<>
+        <Parallax speed={.1} float style={{ top: 30, right: "7%" }}>
+          <PetalIcon size={30} color={PINK} opacity={.5} /></Parallax>
+        <Parallax speed={-.08} float style={{ bottom: 60, left: "5%" }}>
+          <PetalIcon size={22} color="var(--accent)" opacity={.4} /></Parallax>
+      </>}>
+      {/* Header */}
+      <div style={{ textAlign: "center", maxWidth: 760, margin: "0 auto 40px" }}>
         <Reveal variant="up" distance={16}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
-            padding: "6px 14px", borderRadius: 999, background: "var(--tint)",
-            border: "1px solid var(--border)", marginBottom: 16 }}>
+            padding: "7px 16px", borderRadius: 999,
+            background: "linear-gradient(120deg, rgba(180,120,140,.16), rgba(201,182,136,.16))",
+            border: "1px solid var(--border)", marginBottom: 18 }}>
             <ShoppingBag size={14} color="var(--accent)" />
-            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.4px",
-              textTransform: "uppercase", color: "var(--accent)" }}>{m.eyebrow}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.6px",
+              textTransform: "uppercase", color: "var(--accent)" }}>MSA UW Merch · 26–27</span>
           </div>
         </Reveal>
-        <Reveal variant="up" distance={18} delay={60}>
-          <h2 style={{ margin: "0 0 12px", fontSize: "clamp(30px,5vw,46px)", fontWeight: 800,
-            color: "var(--text)" }}>{m.title}</h2>
+        <Reveal variant="up" distance={20} delay={70}>
+          <h2 style={{ margin: "0 0 14px", fontSize: "clamp(40px,8vw,76px)", fontWeight: 800,
+            lineHeight: 1.02, letterSpacing: "-1.5px", color: "var(--text)" }}>
+            Coming Soon
+          </h2>
         </Reveal>
-        {m.intro && (
-          <Reveal variant="up" distance={16} delay={120}>
-            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 16.5, lineHeight: 1.65 }}>
-              {m.intro}</p>
-          </Reveal>
-        )}
+        <Reveal variant="up" distance={16} delay={140}>
+          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "clamp(15px,2vw,18px)",
+            lineHeight: 1.65 }}>
+            A cherry-blossom capsule — <b>Taqdeer</b> (decree) and <b>Tawakkul</b> (trust).
+            Drops soon, insha’Allah. Ordering details go live the moment it’s available.
+          </p>
+        </Reveal>
       </div>
 
-      {/* Product images */}
-      {items.length > 0 ? (
-        <div style={{ display: "grid", gap: 20,
-          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
-          {items.map((it, n) => (
-            <Reveal key={it.id ?? n} delay={n * 80} variant="rise" distance={24}>
-              <div className="lift" style={{ ...card, overflow: "hidden", padding: 0, height: "100%" }}>
-                <div style={{ position: "relative", aspectRatio: "1 / 1", background: "var(--tint)" }}>
-                  {it.img ? (
-                    <img src={it.img} alt={it.name || "Merch"} loading="lazy" decoding="async"
-                      style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                  ) : (
-                    <div style={{ position: "absolute", inset: 0, display: "grid",
-                      placeItems: "center", color: "var(--text-faint)" }}>
-                      <ShoppingBag size={30} />
-                    </div>
-                  )}
-                  {!m.available && (
-                    <div style={{ position: "absolute", top: 12, left: 12, padding: "5px 12px",
-                      borderRadius: 999, background: "rgba(20,17,24,.72)", color: "#fff",
-                      fontSize: 11.5, fontWeight: 700, letterSpacing: ".6px", textTransform: "uppercase" }}>
-                      Coming soon
-                    </div>
-                  )}
+      {/* Hoodie fronts */}
+      <div style={{ display: "grid", gap: 22,
+        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", maxWidth: 760,
+        margin: "0 auto" }}>
+        {(items.length ? items : hoodies).map((h, n) => (
+          <Reveal key={h.key ?? h.id ?? n} delay={n * 90} variant="rise" distance={26}>
+            <div className="lift" style={{ ...card, overflow: "hidden", padding: 0, height: "100%",
+              position: "relative" }}>
+              <div style={{ position: "relative", aspectRatio: "1 / 1",
+                background: "linear-gradient(160deg, var(--tint), var(--surface))" }}>
+                <img src={h.img} alt={h.name || "MSA merch"} loading="lazy" decoding="async"
+                  style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+                <div style={{ position: "absolute", top: 14, left: 14, padding: "6px 13px",
+                  borderRadius: 999, background: "rgba(20,17,24,.78)", color: "#fff",
+                  fontSize: 11, fontWeight: 700, letterSpacing: ".8px", textTransform: "uppercase",
+                  backdropFilter: "blur(4px)" }}>
+                  Coming soon
                 </div>
-                <div style={{ padding: "16px 18px" }}>
-                  <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}>
-                    {it.name || "Untitled"}</div>
-                  {it.note && (
-                    <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 4 }}>
-                      {it.note}</div>
-                  )}
-                </div>
+                {h.word && (
+                  <div style={{ position: "absolute", bottom: 12, right: 16, textAlign: "right",
+                    color: "var(--accent)" }}>
+                    <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1, direction: "rtl" }}>{h.word}</div>
+                    {h.en && <div style={{ fontSize: 11, letterSpacing: "1.4px",
+                      textTransform: "uppercase", color: "var(--text-faint)", marginTop: 3 }}>{h.en}</div>}
+                  </div>
+                )}
               </div>
-            </Reveal>
-          ))}
-        </div>
-      ) : (
-        <Reveal variant="rise" distance={20}>
-          <div style={{ ...card, padding: "40px 24px", textAlign: "center",
-            color: "var(--text-faint)" }}>
-            <ShoppingBag size={30} style={{ marginBottom: 10 }} />
-            <div style={{ fontSize: 15, fontWeight: 600 }}>Merch preview coming soon.</div>
+              {(h.name || h.note) && (
+                <div style={{ padding: "16px 18px" }}>
+                  {h.name && <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}>{h.name}</div>}
+                  {h.note && <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 3 }}>{h.note}</div>}
+                </div>
+              )}
+            </div>
+          </Reveal>
+        ))}
+      </div>
+
+      {/* Back designs — the cherry-blossom calligraphy, shown as one wide render */}
+      {!items.length && (
+        <Reveal variant="rise" distance={24} delay={120}>
+          <div style={{ maxWidth: 760, margin: "22px auto 0" }}>
+            <div className="lift" style={{ ...card, overflow: "hidden", padding: 0 }}>
+              <img src={`${base}merch/backs.webp`} alt="Taqdeer and Tawakkul back designs"
+                loading="lazy" decoding="async"
+                style={{ width: "100%", height: "auto", display: "block" }} />
+            </div>
+            <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-faint)",
+              marginTop: 10 }}>The back: cherry blossoms framing تَقْدِير and تَوَكُّل.</div>
           </div>
         </Reveal>
       )}
 
-      {/* Ordering options — shown once merch is available */}
-      {m.available && channels.length > 0 && (
-        <div style={{ marginTop: 40 }}>
-          <Reveal variant="up" distance={16}>
-            <h3 style={{ textAlign: "center", fontSize: 22, fontWeight: 800, color: "var(--accent)",
-              margin: "0 0 6px" }}>How to order</h3>
-            {m.orderNote && (
-              <p style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 15,
-                margin: "0 0 24px" }}>{m.orderNote}</p>
-            )}
-          </Reveal>
-          <div style={{ display: "grid", gap: 16,
-            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
-            {channels.map((c, n) => {
-              const inner = (
-                <div className="lift" style={{ ...card, padding: "20px 20px", height: "100%",
-                  display: "flex", alignItems: "center", gap: 14 }}>
-                  <div style={{ width: 46, height: 46, borderRadius: 12, flexShrink: 0,
-                    display: "grid", placeItems: "center", background: channelBg(c.kind) }}>
-                    {channelIcon(c.kind)}
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>{c.label}</div>
-                    {c.href && (
-                      <div style={{ fontSize: 12.5, color: "var(--accent)", marginTop: 2,
-                        display: "inline-flex", alignItems: "center", gap: 4 }}>
-                        Open <ExternalLink size={11} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-              return (
-                <Reveal key={c.id ?? n} delay={n * 70} variant="rise" distance={20}>
-                  {c.href
-                    ? <a href={safeHref(c.href)} target="_blank" rel="noopener noreferrer"
-                        style={{ textDecoration: "none", display: "block", height: "100%" }}>{inner}</a>
-                    : inner}
-                </Reveal>
-              );
-            })}
+      {/* CTA — link to the original store */}
+      <Reveal variant="up" distance={16} delay={160}>
+        <div style={{ textAlign: "center", marginTop: 40 }}>
+          <a className="btn lift" href={safeHref(storeUrl)} target="_blank" rel="noopener noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "15px 30px",
+              borderRadius: 14, textDecoration: "none", fontWeight: 800, fontSize: 16,
+              color: "#2c2418", background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)`,
+              boxShadow: "0 10px 30px rgba(201,182,136,.4)" }}>
+            <ShoppingBag size={18} /> Visit the store
+          </a>
+          <div style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 12 }}>
+            Check the shop for the latest — or follow <b>@msauw</b> for the drop.
           </div>
         </div>
-      )}
+      </Reveal>
     </Band>
   );
 }
