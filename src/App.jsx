@@ -18,7 +18,7 @@ Instagram, Facebook, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
   Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Search,
-  Settings, Camera, ArrowUp, ArrowDown
+  Settings, Camera, ArrowUp, ArrowDown, ShoppingBag
 } from "lucide-react";
 
 /* ============================================================
