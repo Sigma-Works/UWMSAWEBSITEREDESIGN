@@ -18,7 +18,7 @@ Instagram, Facebook, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
   Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Search,
-  Settings, Camera, ArrowUp, ArrowDown, ShoppingBag
+  Settings, Camera, ArrowUp, ArrowDown
 } from "lucide-react";
 
 /* ============================================================
@@ -1317,17 +1317,18 @@ const seed = {
   // Dated events power the monthly calendar. date is YYYY-MM-DD.
   calendar: [],
   // ── Board members ─────────────────────────────────────────────────────
-  // status: "current" | "previous". `href` is optional; when set the card
-  // links out. `bio` shows in the expanded detail view.
+  // status: "current" | "previous". `links` is an array of { id, label, url }
+  // and is optional; when non-empty the card badge shows and the modal
+  // lists every link. `bio` shows in the pop-out detail modal.
   board: [
     { id: 1, name: "Example Name", role: "President", status: "current",
-      img: "", href: "", bio: "Add a short bio from the admin panel." },
+      img: "", links: [], bio: "Add a short bio from the admin panel." },
     { id: 2, name: "Example Name", role: "Vice President", status: "current",
-      img: "", href: "", bio: "" },
+      img: "", links: [], bio: "" },
     { id: 3, name: "Example Name", role: "Events Chair", status: "current",
-      img: "", href: "", bio: "" },
+      img: "", links: [], bio: "" },
     { id: 4, name: "Example Name", role: "Past President", status: "previous",
-      img: "", href: "", bio: "" },
+      img: "", links: [], bio: "" },
   ],
   // To use a real photo, add img: "//your-file.jpg" (file goes in public/gallery/).
   // Without img, the card shows a colored gradient placeholder.
@@ -5855,19 +5856,41 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
 }
 
 /* ---------- BOARD MEMBERS ---------- */
+/* Board members historically had a single `href` field; multi-link support
+   later added a `links` array of { id, label, url }. This normalizes either
+   shape into one array so every consumer (card badge, modal, admin editor)
+   reads the same thing. Legacy `href` is treated as a single unlabeled link. */
+function boardLinks(m) {
+  if (Array.isArray(m.links) && m.links.length) return m.links;
+  if (m.href) return [{ id: "legacy", label: "", url: m.href }];
+  return [];
+}
+
+/* Best-effort friendly label for a link that wasn't given one explicitly —
+   falls back to the bare hostname, then finally to "Visit". */
+function linkLabel(l) {
+  if (l.label && l.label.trim()) return l.label.trim();
+  try {
+    return new URL(safeHref(l.url)).hostname.replace(/^www\./, "");
+  } catch {
+    return "Visit";
+  }
+}
+
 /* Compact revolving carousel, deliberately smaller in scale than the main
    gallery. Tabs switch between current and previous board. Clicking a card
-   opens its bio; if the member has a link, the bio panel offers it. */
+   pops the member's photo out into a centered modal with their mini-bio
+   and links, instead of expanding a panel below the grid. */
 function BoardSection({ data }) {
   const [tab, setTab] = useState("current");
-  const [open, setOpen] = useState(null);   // id of expanded member
+  const [active, setActive] = useState(null);   // id of the member shown in the modal
   const reduced = useReducedMotion();
 
   const members = (data.board || []).filter((m) => (m.status || "current") === tab);
 
-  useEffect(() => { setOpen(null); }, [tab]);
+  useEffect(() => { setActive(null); }, [tab]);
 
-  const openMember = members.find((m) => m.id === open);
+  const activeMember = members.find((m) => m.id === active) || null;
 
   const switchTab = (t) => { if (t !== tab) setTab(t); };
 
@@ -5903,60 +5926,92 @@ function BoardSection({ data }) {
           No {tab === "current" ? "current" : "previous"} board members listed yet.
         </div>
       ) : (
-        <div style={{ position: "relative" }}>
-          {/* Responsive grid — every board member visible at once (no more
-              paging/scrolling). auto-fill keeps cards a comfortable width and
-              wraps to as many rows as needed. */}
-          <div style={{ display: "grid", gap: 16,
-            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
-            {members.map((m, n) => (
-              <BoardCard key={m.id} member={m} delay={Math.min(n, 8) * 60}
-                active={open === m.id}
-                onOpen={() => setOpen(open === m.id ? null : m.id)} />
-            ))}
-          </div>
-
-          {/* Expanded bio — grid-rows trick animates height without JS measuring */}
-          <div style={{ display: "grid",
-            gridTemplateRows: openMember ? "1fr" : "0fr",
-            opacity: openMember ? 1 : 0,
-            marginTop: openMember ? 20 : 0,
-            transition: reduced ? "none"
-              : `grid-template-rows ${DUR.base}ms ${EASE.out}, opacity ${DUR.base}ms ${EASE.out}, margin-top ${DUR.base}ms ${EASE.out}` }}>
-            <div style={{ overflow: "hidden" }}>
-              {openMember && (
-                <div style={{ ...card, padding: "22px 24px", display: "flex", gap: 18,
-                  alignItems: "flex-start", flexWrap: "wrap" }}>
-                  <div style={{ flex: "1 1 260px", minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: 18, color: "var(--accent)" }}>
-                      {openMember.name}</div>
-                    <div style={{ fontSize: 13.5, color: "var(--text-faint)", marginBottom: 10 }}>
-                      {openMember.role}</div>
-                    {openMember.bio
-                      ? <div style={{ color: "var(--text-muted)", fontSize: 14.5, lineHeight: 1.65 }}>
-                          <Markdown text={openMember.bio} style={{ margin: "0 0 8px" }} /></div>
-                      : <div style={{ color: "var(--text-faint)", fontSize: 14 }}>No bio yet.</div>}
-                  </div>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    {openMember.href && (
-                      <a className="btn" href={safeHref(openMember.href)} target="_blank" rel="noopener noreferrer"
-                        style={{ ...btnPurple, textDecoration: "none", display: "inline-flex",
-                          alignItems: "center", gap: 7 }}>
-                        Visit <ExternalLink size={14} />
-                      </a>
-                    )}
-                    <button className="btn" onClick={() => setOpen(null)}
-                      style={{ ...btnPurple, background: "var(--tint-2)", color: "var(--accent)" }}>
-                      Close
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+        /* Responsive grid — every board member visible at once (no more
+           paging/scrolling). auto-fill keeps cards a comfortable width and
+           wraps to as many rows as needed. */
+        <div style={{ display: "grid", gap: 16,
+          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
+          {members.map((m, n) => (
+            <BoardCard key={m.id} member={m} delay={Math.min(n, 8) * 60}
+              active={active === m.id}
+              onOpen={() => setActive(m.id)} />
+          ))}
         </div>
       )}
+
+      <BoardMemberModal member={activeMember} onClose={() => setActive(null)} />
     </Band>
+  );
+}
+
+/* Member detail modal — the card's photo pops out large, alongside the
+   mini-bio and every link. Same modalBg/modalIn pop-in used by the photo
+   lightbox and admin panel elsewhere in the site, so the "zoom in" feel is
+   consistent across the app. Escape key and backdrop click both close it. */
+function BoardMemberModal({ member, onClose }) {
+  useEffect(() => {
+    if (!member) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [member, onClose]);
+
+  if (!member) return null;
+
+  const links = boardLinks(member);
+  const initials = String(member.name || "?").trim().split(/\s+/)
+    .slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("");
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label={member.name} className="modalBg" onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,16,.82)",
+        backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20 }}>
+      <button onClick={onClose} aria-label="Close"
+        style={{ position: "absolute", top: 18, right: 18, width: 40, height: 40, borderRadius: "50%",
+          border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
+          display: "grid", placeItems: "center", cursor: "pointer" }}>
+        <X size={20} />
+      </button>
+      <div onClick={(e) => e.stopPropagation()} className="modalIn"
+        style={{ ...card, width: "min(92vw, 460px)", maxHeight: "86vh", overflow: "auto", padding: 0 }}>
+        <div style={{ position: "relative", width: "100%", aspectRatio: "1 / 1", overflow: "hidden",
+          background: `linear-gradient(140deg, ${PURPLE_D}, ${VIOLET})` }}>
+          {member.img
+            ? <img src={member.img} alt="" style={{ width: "100%", height: "100%",
+                objectFit: "cover", display: "block" }} />
+            : <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center",
+                color: "rgba(255,255,255,.9)", fontSize: 54, fontWeight: 800, letterSpacing: 1 }}>
+                {initials || <Users size={54} />}
+              </div>}
+        </div>
+        <div style={{ padding: "22px 24px 26px" }}>
+          <div style={{ fontWeight: 800, fontSize: 21, color: "var(--accent)" }}>{member.name}</div>
+          <div style={{ fontSize: 14, color: "var(--text-faint)", marginBottom: 14 }}>{member.role}</div>
+          {member.bio
+            ? <div style={{ color: "var(--text-muted)", fontSize: 14.5, lineHeight: 1.65,
+                marginBottom: links.length ? 16 : 0 }}>
+                <Markdown text={member.bio} style={{ margin: "0 0 8px" }} /></div>
+            : <div style={{ color: "var(--text-faint)", fontSize: 14, marginBottom: links.length ? 16 : 0 }}>
+                No bio yet.</div>}
+          {links.length > 0 && (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {links.map((l, i) => (
+                <a key={l.id ?? i} className="btn" href={safeHref(l.url)} target="_blank" rel="noopener noreferrer"
+                  style={{ ...btnPurple, textDecoration: "none", display: "inline-flex",
+                    alignItems: "center", gap: 7 }}>
+                  {linkLabel(l)} <ExternalLink size={14} />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -5973,7 +6028,7 @@ function BoardCard({ member: m, delay = 0, active, onOpen }) {
     .slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("");
   return (
     <Reveal delay={delay} variant="rise" distance={24}>
-      <button onClick={onOpen} aria-expanded={!!active}
+      <button onClick={onOpen} aria-haspopup="dialog" aria-expanded={!!active}
         onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
         className="lift zoomable"
         style={{ ...card, width: "100%", padding: 0, overflow: "hidden", cursor: "pointer",
@@ -5994,7 +6049,7 @@ function BoardCard({ member: m, delay = 0, active, onOpen }) {
             background: "linear-gradient(to top, rgba(20,17,24,.55), transparent 55%)",
             opacity: hover || active ? 1 : 0.65,
             transition: `opacity ${DUR.fast}ms ${EASE.out}` }} />
-          {m.href && (
+          {boardLinks(m).length > 0 && (
             <span aria-hidden="true" style={{ position: "absolute", top: 8, right: 8,
               width: 26, height: 26, borderRadius: 8, display: "grid", placeItems: "center",
               background: "rgba(255,255,255,.9)",
@@ -6068,120 +6123,135 @@ function ProgramCard({ program: p }) {
    shows the ordering channels (online / da'wah table / DM Instagram). */
 function MerchSection({ data, onNav }) {
   const m = data.merch || seed.merch;
-  const base = import.meta.env.BASE_URL || "/";
-  const storeUrl = m.orderUrl || MERCH_URL;
-  // Admin-added items override the built-in showcase; otherwise show the
-  // designed "coming soon" reveal with the hoodie renders baked in.
   const items = m.items || [];
+  const channels = m.channels || [];
 
-  const hoodies = [
-    { key: "brown", img: `${base}merch/hoodie-brown.webp`, name: "Taqdeer Hoodie", note: "Sandstone · pullover", word: "تَقْدِير", en: "decree" },
-    { key: "black", img: `${base}merch/hoodie-black.webp`, name: "Tawakkul Zip-Up", note: "Black · full-zip", word: "تَوَكُّل", en: "trust" },
-  ];
+  const channelIcon = (k) => {
+    const p = { size: 22, color: "#fff" };
+    return { link: <ShoppingBag {...p} />, instagram: <Instagram {...p} />,
+      table: <MapPin {...p} /> }[k] || <Link2 {...p} />;
+  };
+  const channelBg = (k) => ({
+    link: `linear-gradient(135deg,${PURPLE},${PURPLE_D})`,
+    instagram: "linear-gradient(135deg,#833AB4,#FD1D1D,#FCB045)",
+    table: `linear-gradient(135deg,${GOLD_D},${GOLD})`,
+  }[k] || PURPLE);
 
   return (
-    <Band id="merch" lattice rosettes="both" decor="both" light lightTone="rose" lightAt="top-right"
-      floats={<>
-        <Parallax speed={.1} float style={{ top: 30, right: "7%" }}>
-          <PetalIcon size={30} color={PINK} opacity={.5} /></Parallax>
-        <Parallax speed={-.08} float style={{ bottom: 60, left: "5%" }}>
-          <PetalIcon size={22} color="var(--accent)" opacity={.4} /></Parallax>
-      </>}>
-      {/* Header */}
-      <div style={{ textAlign: "center", maxWidth: 760, margin: "0 auto 40px" }}>
+    <Band id="merch" lattice rosettes="both" decor="both" light lightTone="gold" lightAt="top-right">
+      <div style={{ textAlign: "center", maxWidth: 720, margin: "0 auto 34px" }}>
         <Reveal variant="up" distance={16}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
-            padding: "7px 16px", borderRadius: 999,
-            background: "linear-gradient(120deg, rgba(180,120,140,.16), rgba(201,182,136,.16))",
-            border: "1px solid var(--border)", marginBottom: 18 }}>
+            padding: "6px 14px", borderRadius: 999, background: "var(--tint)",
+            border: "1px solid var(--border)", marginBottom: 16 }}>
             <ShoppingBag size={14} color="var(--accent)" />
-            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.6px",
-              textTransform: "uppercase", color: "var(--accent)" }}>MSA UW Merch · 26–27</span>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.4px",
+              textTransform: "uppercase", color: "var(--accent)" }}>{m.eyebrow}</span>
           </div>
         </Reveal>
-        <Reveal variant="up" distance={20} delay={70}>
-          <h2 style={{ margin: "0 0 14px", fontSize: "clamp(40px,8vw,76px)", fontWeight: 800,
-            lineHeight: 1.02, letterSpacing: "-1.5px", color: "var(--text)" }}>
-            Coming Soon
-          </h2>
+        <Reveal variant="up" distance={18} delay={60}>
+          <h2 style={{ margin: "0 0 12px", fontSize: "clamp(30px,5vw,46px)", fontWeight: 800,
+            color: "var(--text)" }}>{m.title}</h2>
         </Reveal>
-        <Reveal variant="up" distance={16} delay={140}>
-          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "clamp(15px,2vw,18px)",
-            lineHeight: 1.65 }}>
-            A cherry-blossom capsule — <b>Taqdeer</b> (decree) and <b>Tawakkul</b> (trust).
-            Drops soon, insha’Allah. Ordering details go live the moment it’s available.
-          </p>
-        </Reveal>
-      </div>
-
-      {/* Hoodie fronts */}
-      <div style={{ display: "grid", gap: 22,
-        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", maxWidth: 760,
-        margin: "0 auto" }}>
-        {(items.length ? items : hoodies).map((h, n) => (
-          <Reveal key={h.key ?? h.id ?? n} delay={n * 90} variant="rise" distance={26}>
-            <div className="lift" style={{ ...card, overflow: "hidden", padding: 0, height: "100%",
-              position: "relative" }}>
-              <div style={{ position: "relative", aspectRatio: "1 / 1",
-                background: "linear-gradient(160deg, var(--tint), var(--surface))" }}>
-                <img src={h.img} alt={h.name || "MSA merch"} loading="lazy" decoding="async"
-                  style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
-                <div style={{ position: "absolute", top: 14, left: 14, padding: "6px 13px",
-                  borderRadius: 999, background: "rgba(20,17,24,.78)", color: "#fff",
-                  fontSize: 11, fontWeight: 700, letterSpacing: ".8px", textTransform: "uppercase",
-                  backdropFilter: "blur(4px)" }}>
-                  Coming soon
-                </div>
-                {h.word && (
-                  <div style={{ position: "absolute", bottom: 12, right: 16, textAlign: "right",
-                    color: "var(--accent)" }}>
-                    <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1, direction: "rtl" }}>{h.word}</div>
-                    {h.en && <div style={{ fontSize: 11, letterSpacing: "1.4px",
-                      textTransform: "uppercase", color: "var(--text-faint)", marginTop: 3 }}>{h.en}</div>}
-                  </div>
-                )}
-              </div>
-              {(h.name || h.note) && (
-                <div style={{ padding: "16px 18px" }}>
-                  {h.name && <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}>{h.name}</div>}
-                  {h.note && <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 3 }}>{h.note}</div>}
-                </div>
-              )}
-            </div>
+        {m.intro && (
+          <Reveal variant="up" distance={16} delay={120}>
+            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 16.5, lineHeight: 1.65 }}>
+              {m.intro}</p>
           </Reveal>
-        ))}
+        )}
       </div>
 
-      {/* Back designs — the cherry-blossom calligraphy, shown as one wide render */}
-      {!items.length && (
-        <Reveal variant="rise" distance={24} delay={120}>
-          <div style={{ maxWidth: 760, margin: "22px auto 0" }}>
-            <div className="lift" style={{ ...card, overflow: "hidden", padding: 0 }}>
-              <img src={`${base}merch/backs.webp`} alt="Taqdeer and Tawakkul back designs"
-                loading="lazy" decoding="async"
-                style={{ width: "100%", height: "auto", display: "block" }} />
-            </div>
-            <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-faint)",
-              marginTop: 10 }}>The back: cherry blossoms framing تَقْدِير and تَوَكُّل.</div>
+      {/* Product images */}
+      {items.length > 0 ? (
+        <div style={{ display: "grid", gap: 20,
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
+          {items.map((it, n) => (
+            <Reveal key={it.id ?? n} delay={n * 80} variant="rise" distance={24}>
+              <div className="lift" style={{ ...card, overflow: "hidden", padding: 0, height: "100%" }}>
+                <div style={{ position: "relative", aspectRatio: "1 / 1", background: "var(--tint)" }}>
+                  {it.img ? (
+                    <img src={it.img} alt={it.name || "Merch"} loading="lazy" decoding="async"
+                      style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  ) : (
+                    <div style={{ position: "absolute", inset: 0, display: "grid",
+                      placeItems: "center", color: "var(--text-faint)" }}>
+                      <ShoppingBag size={30} />
+                    </div>
+                  )}
+                  {!m.available && (
+                    <div style={{ position: "absolute", top: 12, left: 12, padding: "5px 12px",
+                      borderRadius: 999, background: "rgba(20,17,24,.72)", color: "#fff",
+                      fontSize: 11.5, fontWeight: 700, letterSpacing: ".6px", textTransform: "uppercase" }}>
+                      Coming soon
+                    </div>
+                  )}
+                </div>
+                <div style={{ padding: "16px 18px" }}>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}>
+                    {it.name || "Untitled"}</div>
+                  {it.note && (
+                    <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 4 }}>
+                      {it.note}</div>
+                  )}
+                </div>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      ) : (
+        <Reveal variant="rise" distance={20}>
+          <div style={{ ...card, padding: "40px 24px", textAlign: "center",
+            color: "var(--text-faint)" }}>
+            <ShoppingBag size={30} style={{ marginBottom: 10 }} />
+            <div style={{ fontSize: 15, fontWeight: 600 }}>Merch preview coming soon.</div>
           </div>
         </Reveal>
       )}
 
-      {/* CTA — link to the original store */}
-      <Reveal variant="up" distance={16} delay={160}>
-        <div style={{ textAlign: "center", marginTop: 40 }}>
-          <a className="btn lift" href={safeHref(storeUrl)} target="_blank" rel="noopener noreferrer"
-            style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "15px 30px",
-              borderRadius: 14, textDecoration: "none", fontWeight: 800, fontSize: 16,
-              color: "#2c2418", background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)`,
-              boxShadow: "0 10px 30px rgba(201,182,136,.4)" }}>
-            <ShoppingBag size={18} /> Visit the store
-          </a>
-          <div style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 12 }}>
-            Check the shop for the latest — or follow <b>@msauw</b> for the drop.
+      {/* Ordering options — shown once merch is available */}
+      {m.available && channels.length > 0 && (
+        <div style={{ marginTop: 40 }}>
+          <Reveal variant="up" distance={16}>
+            <h3 style={{ textAlign: "center", fontSize: 22, fontWeight: 800, color: "var(--accent)",
+              margin: "0 0 6px" }}>How to order</h3>
+            {m.orderNote && (
+              <p style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 15,
+                margin: "0 0 24px" }}>{m.orderNote}</p>
+            )}
+          </Reveal>
+          <div style={{ display: "grid", gap: 16,
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+            {channels.map((c, n) => {
+              const inner = (
+                <div className="lift" style={{ ...card, padding: "20px 20px", height: "100%",
+                  display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+                    display: "grid", placeItems: "center", background: channelBg(c.kind) }}>
+                    {channelIcon(c.kind)}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>{c.label}</div>
+                    {c.href && (
+                      <div style={{ fontSize: 12.5, color: "var(--accent)", marginTop: 2,
+                        display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        Open <ExternalLink size={11} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+              return (
+                <Reveal key={c.id ?? n} delay={n * 70} variant="rise" distance={20}>
+                  {c.href
+                    ? <a href={safeHref(c.href)} target="_blank" rel="noopener noreferrer"
+                        style={{ textDecoration: "none", display: "block", height: "100%" }}>{inner}</a>
+                    : inner}
+                </Reveal>
+              );
+            })}
           </div>
         </div>
-      </Reveal>
+      )}
     </Band>
   );
 }
@@ -7153,15 +7223,20 @@ function Editor({ tab, data, setData }) {
     const edit = (i, patch) => {
       const c = [...board]; c[i] = { ...c[i], ...patch }; setBoard(c);
     };
+    // Writes a member's full links array. Also clears the legacy single
+    // `href` field once links are edited, so the two can't drift out of
+    // sync — boardLinks() only falls back to `href` when `links` is empty.
+    const setMemberLinks = (i, links) => edit(i, { links, href: "" });
     const add = (status) => setBoard([...board, {
       id: Date.now(), name: "New member", role: "Role", status,
-      img: "", href: "", bio: "",
+      img: "", links: [], bio: "",
     }]);
     const groups = [["current", "Current board"], ["previous", "Previous board"]];
     return (
       <Section title="Board members">
         <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Photos upload to storage; the link is optional and opens when someone clicks the card.
+          Photos upload to storage; links are optional and open from the pop-up shown when
+          someone clicks the card — add as many as you like (Instagram, LinkedIn, a website…).
           Move a member to “Previous” at the end of their term rather than deleting them.
         </p>
         {groups.map(([status, label]) => {
@@ -7210,9 +7285,32 @@ function Editor({ tab, data, setData }) {
                   </div>
                   <div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                      Link (optional)</label>
-                    <input style={inpSm} placeholder="https://…" value={m.href || ""}
-                      onChange={(e) => edit(i, { href: e.target.value })} />
+                      Links (optional)</label>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {boardLinks(m).length === 0 && (
+                        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>No links yet.</div>
+                      )}
+                      {boardLinks(m).map((l, li) => {
+                        const links = boardLinks(m);
+                        const editLink = (patch) => setMemberLinks(i,
+                          links.map((x, xi) => (xi === li ? { ...x, ...patch } : x)));
+                        return (
+                          <div key={l.id ?? li} style={{ display: "grid", gap: 6,
+                            gridTemplateColumns: "1fr 1.4fr auto", alignItems: "center" }}>
+                            <input style={inpSm} placeholder="Label (optional)" value={l.label || ""}
+                              onChange={(e) => editLink({ label: e.target.value })} />
+                            <input style={inpSm} placeholder="https://…" value={l.url || ""}
+                              onChange={(e) => editLink({ url: e.target.value })} />
+                            <button onClick={() => setMemberLinks(i, links.filter((_, xi) => xi !== li))}
+                              style={{ ...delBtn, width: 30, height: 30 }} aria-label="Remove link">
+                              <Trash2 size={14} /></button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button onClick={() => setMemberLinks(i, [...boardLinks(m), { id: Date.now(), label: "", url: "" }])}
+                      style={{ ...miniBtn, marginTop: 8 }}>
+                      <Plus size={13} /> Add link</button>
                   </div>
                   <div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
