@@ -98,13 +98,13 @@ const PAGES = [
   { route: "/prayer",    label: "Prayer",    sections: ["prayer", "islamic-house"] },
   { route: "/events",    label: "Events",    sections: ["events", "stats", "programs"] },
   { route: "/community", label: "Community", sections: ["board", "instagram", "tiktok", "quad", "mailing"] },
+  { route: "/merch",     label: "Merch",     sections: ["merch"] },
 ];
 
 // Top-level nav: the five pages, an external Merch link, and the Donate CTA
 // (Donate lives on /about but the CTA jumps straight to its section).
 const NAV = [
   ...PAGES.map((p) => ({ route: p.route, label: p.label })),
-  { label: "Merch", external: true, href: MERCH_URL },
   { route: "/about", section: "donate", label: "Donate", cta: true },
 ];
 
@@ -1238,6 +1238,26 @@ const seed = {
   // ── "New here?" — a short pointer to the Muslim Student Guide for
   // newcomers. Text/heading come from sections.newHere above; the link
   // itself lives here since it's a single URL, not a copy field.
+  // ── Merch ─────────────────────────────────────────────────────────────
+  // Advertise upcoming merch now; add ordering options once it drops. Images
+  // are URLs (upload via the Merch admin tab). `orderUrl` powers the main CTA.
+  merch: {
+    eyebrow: "MSA Merch",
+    title: "Coming soon",
+    intro: "A first look at what's dropping. Ordering details go live the moment it's available.",
+    available: false,       // flip to true (in admin) once orderable
+    orderUrl: MERCH_URL,    // primary "order online" link
+    items: [
+      // { id: 1, name: "MSA x Intentions Hoodie", note: "Off-white · unisex", img: "" },
+    ],
+    // Ordering channels shown once `available` is true (edit in admin).
+    orderNote: "Grab yours one of these ways:",
+    channels: [
+      { id: 1, label: "Order online (Intentions HQ)", href: MERCH_URL, kind: "link" },
+      { id: 2, label: "Find us at a da'wah table on campus", href: "", kind: "table" },
+      { id: 3, label: "DM @msauw to arrange pickup", href: "https://instagram.com/msauw", kind: "instagram" },
+    ],
+  },
   newHere: {
     linkLabel: "Read the Muslim Student Guide",
     // Was previously duplicated as its own card in the Connect/"Find your
@@ -1447,7 +1467,7 @@ function mergeContent(base, saved) {
   const out = { ...base, ...saved };
   for (const key of ["hero", "sections", "prayerTimes", "events", "about",
                      "islamicHouse", "contact", "donate", "eventsExtra",
-                     "bar", "mailing", "newHere", "instagram", "tiktok"]) {
+                     "bar", "mailing", "newHere", "instagram", "tiktok", "merch"]) {
     if (base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
       const savedVal = saved?.[key];
       if (savedVal && typeof savedVal === "object" && !Array.isArray(savedVal)) {
@@ -1758,6 +1778,7 @@ function PageRouter({ route, data, onNav, curtainDone, reduced }) {
       case "tiktok":         return <TikTokSection key="tiktok" data={data} />;
       case "quad":          return <QuadSection key="quad" data={data} />;
       case "mailing":       return <MailingList key="mailing" data={data} />;
+      case "merch":         return <MerchSection key="merch" data={data} onNav={onNav} />;
       default:              return null;
     }
   };
@@ -3248,7 +3269,7 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
           Apple-style: a pinned canvas scrubs a 270-frame bloom sequence as
           the visitor scrolls, then hands off to the branded home hero below.
           Collapses to a single static poster under reduced-motion. */}
-      <CanvasHeroSequence reduced={reduced} overlayRef={heroOverlayRef}>
+      <CanvasHeroSequence reduced={reduced} overlayRef={heroOverlayRef} scrollHeightVh={190}>
         <div ref={heroOverlayRef} style={{ textAlign: "center", maxWidth: 820,
           // The fade/translate is written straight to this node by
           // CanvasHeroSequence as you scroll (no React re-render per tick).
@@ -5840,41 +5861,15 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
 function BoardSection({ data }) {
   const [tab, setTab] = useState("current");
   const [open, setOpen] = useState(null);   // id of expanded member
-  const [page, setPage] = useState(0);
-  const [perPage, setPerPage] = useState(5);
   const reduced = useReducedMotion();
-  const trackWrapRef = useRef(null);
-
-  // How many cards fit at once — recalculated on resize.
-  useEffect(() => {
-    const calc = () => {
-      const w = window.innerWidth;
-      setPerPage(w < 560 ? 1 : w < 860 ? 2 : w < 1120 ? 3 : 5);
-    };
-    calc();
-    window.addEventListener("resize", calc, { passive: true });
-    return () => window.removeEventListener("resize", calc);
-  }, []);
 
   const members = (data.board || []).filter((m) => (m.status || "current") === tab);
-  const pages = Math.max(1, Math.ceil(members.length / perPage));
 
-  // Keep the page in range when the tab or viewport changes.
-  useEffect(() => { setPage((p) => Math.min(p, pages - 1)); }, [pages, tab]);
-  useEffect(() => { setOpen(null); setPage(0); }, [tab]);
+  useEffect(() => { setOpen(null); }, [tab]);
 
   const openMember = members.find((m) => m.id === open);
 
   const switchTab = (t) => { if (t !== tab) setTab(t); };
-
-  // Swipe left/right on touch devices pages the carousel the same way the
-  // arrow buttons below do — most useful at perPage:1 (phones), where each
-  // member gets their own "page" to swipe through.
-  useSwipe(trackWrapRef, {
-    onLeft: () => setPage((p) => (p + 1) % pages),
-    onRight: () => setPage((p) => (p - 1 + pages) % pages),
-    enabled: pages > 1,
-  });
 
   return (
     <Band id="board" alt lattice rosettes="right" decor="left" light lightTone="rose" lightAt="bottom-left">
@@ -5909,50 +5904,17 @@ function BoardSection({ data }) {
         </div>
       ) : (
         <div style={{ position: "relative" }}>
-          {/* Track — translated by page, so it revolves rather than reflowing.
-              Ref is what useSwipe listens on for touch drag. */}
-          <div ref={trackWrapRef} style={{ overflow: "hidden", touchAction: "pan-y" }}>
-            <div style={{ display: "flex",
-              transform: `translate3d(-${page * 100}%, 0, 0)`,
-              transition: reduced ? "none" : `transform ${DUR.slow}ms ${EASE.outSoft}` }}>
-              {Array.from({ length: pages }, (_, pi) => (
-                <div key={pi} style={{ flex: "0 0 100%", display: "grid", gap: 16,
-                  gridTemplateColumns: `repeat(${perPage}, minmax(0, 1fr))` }}>
-                  {members.slice(pi * perPage, pi * perPage + perPage).map((m, n) => (
-                    <BoardCard key={m.id} member={m} delay={n * 70}
-                      active={open === m.id}
-                      onOpen={() => setOpen(open === m.id ? null : m.id)} />
-                  ))}
-                </div>
-              ))}
-            </div>
+          {/* Responsive grid — every board member visible at once (no more
+              paging/scrolling). auto-fill keeps cards a comfortable width and
+              wraps to as many rows as needed. */}
+          <div style={{ display: "grid", gap: 16,
+            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
+            {members.map((m, n) => (
+              <BoardCard key={m.id} member={m} delay={Math.min(n, 8) * 60}
+                active={open === m.id}
+                onOpen={() => setOpen(open === m.id ? null : m.id)} />
+            ))}
           </div>
-
-          {pages > 1 && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
-              gap: 12, marginTop: 20 }}>
-              <button className="btn" aria-label="Previous board members"
-                onClick={() => setPage((p) => (p - 1 + pages) % pages)}
-                style={boardNavBtn}><ChevronLeft size={18} color="var(--accent)" /></button>
-              <div style={{ display: "flex", gap: 7 }}>
-                {Array.from({ length: pages }, (_, n) => (
-                  <button key={n} onClick={() => setPage(n)} aria-label={`Page ${n + 1}`}
-                    style={{ width: 22, height: 8, borderRadius: 99, border: "none",
-                      background: "transparent", cursor: "pointer", padding: 0,
-                      display: "grid", placeItems: "center" }}>
-                    <span aria-hidden="true" style={{ display: "block", width: 22, height: 8,
-                      borderRadius: 99, transformOrigin: "50% 50%",
-                      transform: n === page ? "scaleX(1)" : "scaleX(.34)",
-                      background: n === page ? GOLD : "var(--border-strong)",
-                      transition: `transform ${DUR.base}ms ${EASE.out}, background ${DUR.base}ms ${EASE.out}` }} />
-                  </button>
-                ))}
-              </div>
-              <button className="btn" aria-label="Next board members"
-                onClick={() => setPage((p) => (p + 1) % pages)}
-                style={boardNavBtn}><ChevronRight size={18} color="var(--accent)" /></button>
-            </div>
-          )}
 
           {/* Expanded bio — grid-rows trick animates height without JS measuring */}
           <div style={{ display: "grid",
@@ -6100,6 +6062,146 @@ function ProgramCard({ program: p }) {
    Heading/body come from the standard section-copy system (admin: Section
    text → "New here?"); the link itself is a single field on its own admin
    tab, since it's a URL rather than editorial copy. */
+/* ---------- MERCH ---------- */
+/* Dedicated Merch page. Before merch drops (available:false) it advertises
+   upcoming items with images. Once an admin flips `available` on, it also
+   shows the ordering channels (online / da'wah table / DM Instagram). */
+function MerchSection({ data, onNav }) {
+  const m = data.merch || seed.merch;
+  const items = m.items || [];
+  const channels = m.channels || [];
+
+  const channelIcon = (k) => {
+    const p = { size: 22, color: "#fff" };
+    return { link: <ShoppingBag {...p} />, instagram: <Instagram {...p} />,
+      table: <MapPin {...p} /> }[k] || <Link2 {...p} />;
+  };
+  const channelBg = (k) => ({
+    link: `linear-gradient(135deg,${PURPLE},${PURPLE_D})`,
+    instagram: "linear-gradient(135deg,#833AB4,#FD1D1D,#FCB045)",
+    table: `linear-gradient(135deg,${GOLD_D},${GOLD})`,
+  }[k] || PURPLE);
+
+  return (
+    <Band id="merch" lattice rosettes="both" decor="both" light lightTone="gold" lightAt="top-right">
+      <div style={{ textAlign: "center", maxWidth: 720, margin: "0 auto 34px" }}>
+        <Reveal variant="up" distance={16}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "6px 14px", borderRadius: 999, background: "var(--tint)",
+            border: "1px solid var(--border)", marginBottom: 16 }}>
+            <ShoppingBag size={14} color="var(--accent)" />
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.4px",
+              textTransform: "uppercase", color: "var(--accent)" }}>{m.eyebrow}</span>
+          </div>
+        </Reveal>
+        <Reveal variant="up" distance={18} delay={60}>
+          <h2 style={{ margin: "0 0 12px", fontSize: "clamp(30px,5vw,46px)", fontWeight: 800,
+            color: "var(--text)" }}>{m.title}</h2>
+        </Reveal>
+        {m.intro && (
+          <Reveal variant="up" distance={16} delay={120}>
+            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 16.5, lineHeight: 1.65 }}>
+              {m.intro}</p>
+          </Reveal>
+        )}
+      </div>
+
+      {/* Product images */}
+      {items.length > 0 ? (
+        <div style={{ display: "grid", gap: 20,
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
+          {items.map((it, n) => (
+            <Reveal key={it.id ?? n} delay={n * 80} variant="rise" distance={24}>
+              <div className="lift" style={{ ...card, overflow: "hidden", padding: 0, height: "100%" }}>
+                <div style={{ position: "relative", aspectRatio: "1 / 1", background: "var(--tint)" }}>
+                  {it.img ? (
+                    <img src={it.img} alt={it.name || "Merch"} loading="lazy" decoding="async"
+                      style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  ) : (
+                    <div style={{ position: "absolute", inset: 0, display: "grid",
+                      placeItems: "center", color: "var(--text-faint)" }}>
+                      <ShoppingBag size={30} />
+                    </div>
+                  )}
+                  {!m.available && (
+                    <div style={{ position: "absolute", top: 12, left: 12, padding: "5px 12px",
+                      borderRadius: 999, background: "rgba(20,17,24,.72)", color: "#fff",
+                      fontSize: 11.5, fontWeight: 700, letterSpacing: ".6px", textTransform: "uppercase" }}>
+                      Coming soon
+                    </div>
+                  )}
+                </div>
+                <div style={{ padding: "16px 18px" }}>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}>
+                    {it.name || "Untitled"}</div>
+                  {it.note && (
+                    <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 4 }}>
+                      {it.note}</div>
+                  )}
+                </div>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      ) : (
+        <Reveal variant="rise" distance={20}>
+          <div style={{ ...card, padding: "40px 24px", textAlign: "center",
+            color: "var(--text-faint)" }}>
+            <ShoppingBag size={30} style={{ marginBottom: 10 }} />
+            <div style={{ fontSize: 15, fontWeight: 600 }}>Merch preview coming soon.</div>
+          </div>
+        </Reveal>
+      )}
+
+      {/* Ordering options — shown once merch is available */}
+      {m.available && channels.length > 0 && (
+        <div style={{ marginTop: 40 }}>
+          <Reveal variant="up" distance={16}>
+            <h3 style={{ textAlign: "center", fontSize: 22, fontWeight: 800, color: "var(--accent)",
+              margin: "0 0 6px" }}>How to order</h3>
+            {m.orderNote && (
+              <p style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 15,
+                margin: "0 0 24px" }}>{m.orderNote}</p>
+            )}
+          </Reveal>
+          <div style={{ display: "grid", gap: 16,
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+            {channels.map((c, n) => {
+              const inner = (
+                <div className="lift" style={{ ...card, padding: "20px 20px", height: "100%",
+                  display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+                    display: "grid", placeItems: "center", background: channelBg(c.kind) }}>
+                    {channelIcon(c.kind)}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>{c.label}</div>
+                    {c.href && (
+                      <div style={{ fontSize: 12.5, color: "var(--accent)", marginTop: 2,
+                        display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        Open <ExternalLink size={11} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+              return (
+                <Reveal key={c.id ?? n} delay={n * 70} variant="rise" distance={20}>
+                  {c.href
+                    ? <a href={safeHref(c.href)} target="_blank" rel="noopener noreferrer"
+                        style={{ textDecoration: "none", display: "block", height: "100%" }}>{inner}</a>
+                    : inner}
+                </Reveal>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </Band>
+  );
+}
+
+/* ---------- NEW HERE ---------- */
 function NewHereSection({ data, onNav }) {
   const nh = data.newHere || seed.newHere;
   return (
@@ -6768,7 +6870,7 @@ function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClo
                 { group: "About", items: [["about", "About us"], ["donate", "Donate"], ["sponsors", "Sponsors"]] },
                 { group: "Prayer", items: [["times", "Prayer times"], ["spaces", "Prayer spaces"], ["house", "Islamic House"]] },
                 { group: "Events", items: [["events", "Weekly events"], ["calendar", "Calendar"], ["stats", "Stats / metrics"], ["programs", "Programs"]] },
-                { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["tiktok", "TikTok"], ["mailing", "Mailing list"]] },
+                { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["tiktok", "TikTok"], ["mailing", "Mailing list"], ["merch", "Merch"]] },
                 { group: "Admin", items: [["history", "Change history"]] },
               ].map(({ group, items }) => (
                 <div key={group} style={{ marginBottom: 8 }}>
@@ -7565,6 +7667,100 @@ function Editor({ tab, data, setData }) {
               <button onClick={() => setTk({ posts: posts.filter((_, n) => n !== i) })}
                 style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
                 aria-label="Delete video"><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+      </Section>
+    );
+  }
+
+  if (tab === "merch") {
+    const mc = data.merch || seed.merch;
+    const setM = (patch) => up({ merch: { ...mc, ...patch } });
+    const items = mc.items || [];
+    const editI = (i, patch) => { const c = [...items]; c[i] = { ...c[i], ...patch }; setM({ items: c }); };
+    const channels = mc.channels || [];
+    const editC = (i, patch) => { const c = [...channels]; c[i] = { ...c[i], ...patch }; setM({ channels: c }); };
+    return (
+      <Section title="Merch">
+        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Advertise upcoming merch with photos now. When it's orderable, turn on
+          <b> "Merch is available"</b> to reveal the ordering options below it. Heading text
+          is on this tab.
+        </p>
+        <Field label="Eyebrow (small label)">
+          <input style={inp} value={mc.eyebrow || ""} onChange={(e) => setM({ eyebrow: e.target.value })} />
+        </Field>
+        <Field label="Title">
+          <input style={inp} value={mc.title || ""} onChange={(e) => setM({ title: e.target.value })} />
+        </Field>
+        <Field label="Intro line">
+          <input style={inp} value={mc.intro || ""} onChange={(e) => setM({ intro: e.target.value })} />
+        </Field>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, margin: "6px 0 4px",
+          cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+          <input type="checkbox" checked={!!mc.available}
+            onChange={(e) => setM({ available: e.target.checked })} />
+          Merch is available (show ordering options)
+        </label>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          margin: "18px 0 10px" }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Products</h4>
+          <button onClick={() => setM({ items: [...items, { id: Date.now(), name: "", note: "", img: "" }] })}
+            style={miniBtn}><Plus size={14} /> Add</button>
+        </div>
+        <div style={{ display: "grid", gap: 12 }}>
+          {items.map((it, i) => (
+            <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, display: "grid", gap: 8, position: "relative" }}>
+              <div><label style={lbl}>Name</label>
+                <input style={inpSm} value={it.name || ""} placeholder="MSA x Intentions Hoodie"
+                  onChange={(e) => editI(i, { name: e.target.value })} /></div>
+              <div><label style={lbl}>Note (color, sizing…)</label>
+                <input style={inpSm} value={it.note || ""} placeholder="Off-white · unisex"
+                  onChange={(e) => editI(i, { note: e.target.value })} /></div>
+              <ImageField label="Product photo" value={it.img || ""} folder="merch"
+                onChange={(url) => editI(i, { img: url })} />
+              <button onClick={() => setM({ items: items.filter((_, n) => n !== i) })}
+                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
+                aria-label="Delete product"><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          margin: "22px 0 6px" }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
+            Ordering options</h4>
+          <button onClick={() => setM({ channels: [...channels, { id: Date.now(), label: "", href: "", kind: "link" }] })}
+            style={miniBtn}><Plus size={14} /> Add</button>
+        </div>
+        <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
+          Shown only when "Merch is available" is on. Icon options: <b>link</b> (online store),
+          <b> instagram</b> (DM), <b>table</b> (da'wah table).
+        </p>
+        <Field label="Ordering intro line">
+          <input style={inp} value={mc.orderNote || ""} onChange={(e) => setM({ orderNote: e.target.value })} />
+        </Field>
+        <div style={{ display: "grid", gap: 12 }}>
+          {channels.map((c, i) => (
+            <div key={c.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, display: "grid", gap: 8, position: "relative" }}>
+              <div><label style={lbl}>Label</label>
+                <input style={inpSm} value={c.label || ""} placeholder="Order online (Intentions HQ)"
+                  onChange={(e) => editC(i, { label: e.target.value })} /></div>
+              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "2fr 1fr" }}>
+                <div><label style={lbl}>Link (optional)</label>
+                  <input style={inpSm} value={c.href || ""} placeholder="https://…"
+                    onChange={(e) => editC(i, { href: e.target.value })} /></div>
+                <div><label style={lbl}>Icon</label>
+                  <input style={inpSm} value={c.kind || ""} placeholder="link / instagram / table"
+                    onChange={(e) => editC(i, { kind: e.target.value })} /></div>
+              </div>
+              <button onClick={() => setM({ channels: channels.filter((_, n) => n !== i) })}
+                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
+                aria-label="Delete option"><Trash2 size={15} /></button>
             </div>
           ))}
         </div>
