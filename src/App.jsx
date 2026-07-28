@@ -18,7 +18,7 @@ Instagram, Facebook, Link2,
   Lock, LogOut, Plus, Trash2, Edit3, ChevronLeft, ChevronRight,
   Home, Star, HandHeart, GraduationCap, Sparkles, ExternalLink, Save,
   Sun, Moon, Mail, Send, CalendarDays, LayoutGrid, Search,
-  Settings, Camera, ArrowUp, ArrowDown
+  Settings, Camera, ArrowUp, ArrowDown, ShoppingBag
 } from "lucide-react";
 
 /* ============================================================
@@ -6075,8 +6075,8 @@ function MerchSection({ data, onNav }) {
   const items = m.items || [];
 
   const hoodies = [
-    { key: "brown", img: `${base}merch/hoodie-brown.webp`, name: "Taqdeer Hoodie", note: "Sandstone \u00b7 pullover", word: "\u062a\u064e\u0642\u0652\u062f\u0650\u064a\u0631", en: "decree" },
-    { key: "black", img: `${base}merch/hoodie-black.webp`, name: "Tawakkul Zip-Up", note: "Black \u00b7 full-zip", word: "\u062a\u064e\u0648\u064e\u0643\u0651\u064f\u0644", en: "trust" },
+    { key: "brown", img: `${base}merch/hoodie-brown.webp`, name: "Taqdeer Hoodie", note: "Sandstone · pullover", word: "تَقْدِير", en: "decree" },
+    { key: "black", img: `${base}merch/hoodie-black.webp`, name: "Tawakkul Zip-Up", note: "Black · full-zip", word: "تَوَكُّل", en: "trust" },
   ];
 
   return (
@@ -6096,7 +6096,7 @@ function MerchSection({ data, onNav }) {
             border: "1px solid var(--border)", marginBottom: 18 }}>
             <ShoppingBag size={14} color="var(--accent)" />
             <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.6px",
-              textTransform: "uppercase", color: "var(--accent)" }}>MSA UW Merch \u00b7 26\u201327</span>
+              textTransform: "uppercase", color: "var(--accent)" }}>MSA UW Merch · 26–27</span>
           </div>
         </Reveal>
         <Reveal variant="up" distance={20} delay={70}>
@@ -6108,8 +6108,8 @@ function MerchSection({ data, onNav }) {
         <Reveal variant="up" distance={16} delay={140}>
           <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "clamp(15px,2vw,18px)",
             lineHeight: 1.65 }}>
-            A cherry-blossom capsule \u2014 <b>Taqdeer</b> (decree) and <b>Tawakkul</b> (trust).
-            Drops soon, insha\u2019Allah. Ordering details go live the moment it\u2019s available.
+            A cherry-blossom capsule — <b>Taqdeer</b> (decree) and <b>Tawakkul</b> (trust).
+            Drops soon, insha’Allah. Ordering details go live the moment it’s available.
           </p>
         </Reveal>
       </div>
@@ -6178,7 +6178,7 @@ function MerchSection({ data, onNav }) {
             <ShoppingBag size={18} /> Visit the store
           </a>
           <div style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 12 }}>
-            Check the shop for the latest \u2014 or follow <b>@msauw</b> for the drop.
+            Check the shop for the latest — or follow <b>@msauw</b> for the drop.
           </div>
         </div>
       </Reveal>
