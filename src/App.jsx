@@ -1317,17 +1317,21 @@ const seed = {
   // Dated events power the monthly calendar. date is YYYY-MM-DD.
   calendar: [],
   // ── Board members ─────────────────────────────────────────────────────
-  // status: "current" | "previous". `links` is an array of { id, label, url }
-  // and is optional; when non-empty the card badge shows and the modal
-  // lists every link. `bio` shows in the pop-out detail modal.
+  // boardYears lists every board "term" that exists, newest first — the
+  // admin panel's year picker and the public dropdown both read from this.
+  // Each member has a `year` matching one of these strings. `links` is an
+  // array of { id, label, url } and is optional; when non-empty the card
+  // badge shows and the modal lists every link. `bio` shows in the pop-out
+  // detail modal.
+  boardYears: ["2025-26", "2024-25"],
   board: [
-    { id: 1, name: "Example Name", role: "President", status: "current",
+    { id: 1, name: "Example Name", role: "President", year: "2025-26",
       img: "", links: [], bio: "Add a short bio from the admin panel." },
-    { id: 2, name: "Example Name", role: "Vice President", status: "current",
+    { id: 2, name: "Example Name", role: "Vice President", year: "2025-26",
       img: "", links: [], bio: "" },
-    { id: 3, name: "Example Name", role: "Events Chair", status: "current",
+    { id: 3, name: "Example Name", role: "Events Chair", year: "2025-26",
       img: "", links: [], bio: "" },
-    { id: 4, name: "Example Name", role: "Past President", status: "previous",
+    { id: 4, name: "Example Name", role: "Past President", year: "2024-25",
       img: "", links: [], bio: "" },
   ],
   // To use a real photo, add img: "//your-file.jpg" (file goes in public/gallery/).
@@ -5094,8 +5098,7 @@ function buildIndex(data) {
     push("Event", e.name, [e.date, e.time, e.loc].filter(Boolean).join(" · "), "events"));
   (data.programs || []).forEach((p) => push("Program", p.name, p.desc, "programs"));
   (data.board || []).forEach((m) =>
-    push("Board", m.name, [m.role, m.status === "previous" ? "Previous" : "Current"]
-      .filter(Boolean).join(" · "), "board"));
+    push("Board", m.name, [m.role, m.year].filter(Boolean).join(" · "), "board"));
   (data.prayerSpaces || []).forEach((s) => push("Prayer space", s.name, s.loc, "prayer"));
   // Announcements now render inside the "home" hero, not their own section.
   (data.announcements || []).forEach((a) => push("Announcement", a.title, a.body, "home"));
@@ -5882,48 +5885,39 @@ function linkLabel(l) {
    pops the member's photo out into a centered modal with their mini-bio
    and links, instead of expanding a panel below the grid. */
 function BoardSection({ data }) {
-  const [tab, setTab] = useState("current");
+  const years = data.boardYears && data.boardYears.length
+    ? data.boardYears
+    : [...new Set((data.board || []).map((m) => m.year).filter(Boolean))];
+  const [year, setYear] = useState(years[0] || "");
   const [active, setActive] = useState(null);   // id of the member shown in the modal
-  const reduced = useReducedMotion();
 
-  const members = (data.board || []).filter((m) => (m.status || "current") === tab);
+  const members = (data.board || []).filter((m) => (m.year || years[0]) === year);
 
-  useEffect(() => { setActive(null); }, [tab]);
+  useEffect(() => { setActive(null); }, [year]);
 
   const activeMember = members.find((m) => m.id === active) || null;
-
-  const switchTab = (t) => { if (t !== tab) setTab(t); };
 
   return (
     <Band id="board" alt lattice rosettes="right" decor="left" light lightTone="rose" lightAt="bottom-left">
       <SectionCopy data={data} sectionKey="board" />
 
-      {/* Tabs — the active pill slides between options */}
-      <Reveal variant="up" distance={16}>
-        <div role="tablist" aria-label="Board member groups"
-          style={{ display: "inline-flex", position: "relative", padding: 4, borderRadius: 999,
-            background: "var(--tint)", border: "1px solid var(--border)", marginBottom: 28 }}>
-          <span aria-hidden="true" style={{ position: "absolute", top: 4, bottom: 4,
-            left: 4, width: "calc(50% - 4px)", borderRadius: 999, background: "var(--surface)",
-            boxShadow: "var(--card-shadow)",
-            transform: tab === "current" ? "translateX(0)" : "translateX(100%)",
-            transition: reduced ? "none" : `transform ${DUR.base}ms ${EASE.out}` }} />
-          {[["current", "Current board"], ["previous", "Previous board"]].map(([k, label]) => (
-            <button key={k} role="tab" aria-selected={tab === k} onClick={() => switchTab(k)}
-              style={{ position: "relative", zIndex: 1, border: "none", background: "none",
-                cursor: "pointer", padding: "9px 20px", borderRadius: 999,
-                fontFamily: "inherit", fontSize: 14, fontWeight: 700,
-                color: tab === k ? "var(--accent)" : "var(--text-muted)",
-                transition: `color ${DUR.fast}ms ${EASE.out}` }}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </Reveal>
+      {/* Year picker — swaps which term's members are shown below */}
+      {years.length > 0 && (
+        <Reveal variant="up" distance={16}>
+          <div style={{ marginBottom: 28 }}>
+            <select aria-label="Board year" value={year} onChange={(e) => setYear(e.target.value)}
+              style={{ padding: "9px 16px", borderRadius: 999, border: "1px solid var(--border)",
+                background: "var(--tint)", color: "var(--accent)", fontFamily: "inherit",
+                fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+              {years.map((y) => <option key={y} value={y}>{y} board</option>)}
+            </select>
+          </div>
+        </Reveal>
+      )}
 
       {members.length === 0 ? (
         <div style={{ color: "var(--text-faint)", fontSize: 14.5, padding: "22px 0" }}>
-          No {tab === "current" ? "current" : "previous"} board members listed yet.
+          No board members listed for {year || "this year"} yet.
         </div>
       ) : (
         /* Responsive grid — every board member visible at once (no more
@@ -7013,6 +7007,11 @@ function AdminHistory() {
 
 function Editor({ tab, data, setData }) {
   const up = (patch) => setData({ ...data, ...patch });
+  // Lives here (not inside the "board" branch below) because hooks can't be
+  // called conditionally — Editor renders one big if/else chain keyed on tab.
+  const boardYears = data.boardYears && data.boardYears.length ? data.boardYears : ["2025-26"];
+  const [editYear, setEditYear] = useState(boardYears[0]);
+  const [newBoardYear, setNewBoardYear] = useState("");
 
   if (tab === "hero")
     return (
@@ -7205,6 +7204,7 @@ function Editor({ tab, data, setData }) {
   if (tab === "board") {
     const board = data.board || [];
     const setBoard = (next) => up({ board: next });
+    const setBoardYears = (next) => up({ boardYears: next });
     const edit = (i, patch) => {
       const c = [...board]; c[i] = { ...c[i], ...patch }; setBoard(c);
     };
@@ -7212,122 +7212,140 @@ function Editor({ tab, data, setData }) {
     // `href` field once links are edited, so the two can't drift out of
     // sync — boardLinks() only falls back to `href` when `links` is empty.
     const setMemberLinks = (i, links) => edit(i, { links, href: "" });
-    const add = (status) => setBoard([...board, {
-      id: Date.now(), name: "New member", role: "Role", status,
+    const add = () => setBoard([...board, {
+      id: Date.now(), name: "New member", role: "Role", year: editYear,
       img: "", links: [], bio: "",
     }]);
-    const groups = [["current", "Current board"], ["previous", "Previous board"]];
+    const addBoardYear = () => {
+      const y = newBoardYear.trim();
+      if (!y || boardYears.includes(y)) return;
+      setBoardYears([...boardYears, y]);
+      setEditYear(y);
+      setNewBoardYear("");
+    };
+    const removeBoardYear = (y) => {
+      if (board.some((m) => (m.year || boardYears[0]) === y)) {
+        alert(`Move or delete every member listed under ${y} before removing that year.`);
+        return;
+      }
+      const next = boardYears.filter((x) => x !== y);
+      setBoardYears(next);
+      if (editYear === y) setEditYear(next[0] || "");
+    };
+    const groupIdxs = board.reduce((acc, m, idx) => {
+      if ((m.year || boardYears[0]) === editYear) acc.push(idx);
+      return acc;
+    }, []);
     return (
       <Section title="Board members">
         <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
           Photos upload to storage; links are optional and open from the pop-up shown when
           someone clicks the card — add as many as you like (Instagram, LinkedIn, a website…).
-          Move a member to “Previous” at the end of their term rather than deleting them.
+          Add a new year below for each incoming board rather than deleting the old one.
         </p>
-        {groups.map(([status, label]) => {
-          const groupIdxs = board.reduce((acc, m, idx) => {
-            if ((m.status || "current") === status) acc.push(idx);
-            return acc;
-          }, []);
-          return (
-          <div key={status} style={{ marginBottom: 22 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-              marginBottom: 10 }}>
-              <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
-                {label}</h4>
-              <button onClick={() => add(status)} style={miniBtn}>
-                <Plus size={14} /> Add</button>
-            </div>
-            <div style={{ display: "grid", gap: 14 }}>
-              {board.filter((m) => (m.status || "current") === status).length === 0 && (
-                <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 8,
-                  textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
-                  None yet</div>
-              )}
-              {/* Reorder within a group (Current / Previous) by swapping with the
-                  nearest neighbour that shares the same status — `i` below is
-                  the real index into the full `board` array, but `pos`/`groupIdxs`
-                  track this member's position within just its own group, since
-                  Current and Previous members are interleaved in the array. */}
-              {groupIdxs.map((i, pos) => {
-                const m = board[i];
-                return (
-                <div key={m.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-                  padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
-                  <ImageField label="Photo" value={m.img || ""} folder="board"
-                    onChange={(url) => edit(i, { img: url })} />
-                  <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Name</label>
-                      <input style={inpSm} value={m.name || ""}
-                        onChange={(e) => edit(i, { name: e.target.value })} />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Role / title</label>
-                      <input style={inpSm} value={m.role || ""}
-                        onChange={(e) => edit(i, { role: e.target.value })} />
-                    </div>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                      Links (optional)</label>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      {boardLinks(m).length === 0 && (
-                        <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>No links yet.</div>
-                      )}
-                      {boardLinks(m).map((l, li) => {
-                        const links = boardLinks(m);
-                        const editLink = (patch) => setMemberLinks(i,
-                          links.map((x, xi) => (xi === li ? { ...x, ...patch } : x)));
-                        return (
-                          <div key={l.id ?? li} style={{ display: "grid", gap: 6,
-                            gridTemplateColumns: "1fr 1.4fr auto", alignItems: "center" }}>
-                            <input style={inpSm} placeholder="Label (optional)" value={l.label || ""}
-                              onChange={(e) => editLink({ label: e.target.value })} />
-                            <input style={inpSm} placeholder="https://…" value={l.url || ""}
-                              onChange={(e) => editLink({ url: e.target.value })} />
-                            <button onClick={() => setMemberLinks(i, links.filter((_, xi) => xi !== li))}
-                              style={{ ...delBtn, width: 30, height: 30 }} aria-label="Remove link">
-                              <Trash2 size={14} /></button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <button onClick={() => setMemberLinks(i, [...boardLinks(m), { id: Date.now(), label: "", url: "" }])}
-                      style={{ ...miniBtn, marginTop: 8 }}>
-                      <Plus size={13} /> Add link</button>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                      Mini bio</label>
-                    <textarea style={{ ...inpSm, minHeight: 70, resize: "vertical" }}
-                      value={m.bio || ""} onChange={(e) => edit(i, { bio: e.target.value })} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Status</label>
-                    <select style={inpSm} value={m.status || "current"}
-                      onChange={(e) => edit(i, { status: e.target.value })}>
-                      <option value="current">Current</option>
-                      <option value="previous">Previous</option>
-                    </select>
-                  </div>
-                  <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
-                    <button onClick={() => pos > 0 && setBoard(arraySwap(board, i, groupIdxs[pos - 1]))}
-                      disabled={pos === 0} style={pos === 0 ? moveBtnOff : moveBtn}
-                      aria-label={`Move ${m.name} up`}><ArrowUp size={14} /></button>
-                    <button onClick={() => pos < groupIdxs.length - 1 && setBoard(arraySwap(board, i, groupIdxs[pos + 1]))}
-                      disabled={pos === groupIdxs.length - 1} style={pos === groupIdxs.length - 1 ? moveBtnOff : moveBtn}
-                      aria-label={`Move ${m.name} down`}><ArrowDown size={14} /></button>
-                    <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
-                      style={delBtn} aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
-                  </div>
+
+        {/* Year management — switch which term you're editing, or add a new one */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Editing year</label>
+          <select style={inpSm} value={editYear} onChange={(e) => setEditYear(e.target.value)}>
+            {boardYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          {boardYears.length > 1 && (
+            <button onClick={() => removeBoardYear(editYear)} style={{ ...delBtn, width: 30, height: 30 }}
+              aria-label={`Remove ${editYear}`}><Trash2 size={14} /></button>
+          )}
+          <input style={{ ...inpSm, width: 110 }} placeholder="e.g. 2026-27" value={newBoardYear}
+            onChange={(e) => setNewBoardYear(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addBoardYear()} />
+          <button onClick={addBoardYear} style={miniBtn}><Plus size={14} /> Add year</button>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          marginBottom: 10 }}>
+          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
+            {editYear} board</h4>
+          <button onClick={add} style={miniBtn}>
+            <Plus size={14} /> Add</button>
+        </div>
+        <div style={{ display: "grid", gap: 14 }}>
+          {groupIdxs.length === 0 && (
+            <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 8,
+              textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
+              None yet</div>
+          )}
+          {/* Reorder within the selected year by swapping with the nearest
+              neighbour that shares the same year — `i` below is the real
+              index into the full `board` array, but `pos`/`groupIdxs` track
+              this member's position within just this year's group, since
+              different years' members are interleaved in the array. */}
+          {groupIdxs.map((i, pos) => {
+            const m = board[i];
+            return (
+            <div key={m.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
+              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
+              <ImageField label="Photo" value={m.img || ""} folder="board"
+                onChange={(url) => edit(i, { img: url })} />
+              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Name</label>
+                  <input style={inpSm} value={m.name || ""}
+                    onChange={(e) => edit(i, { name: e.target.value })} />
                 </div>
-                );
-              })}
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Role / title</label>
+                  <input style={inpSm} value={m.role || ""}
+                    onChange={(e) => edit(i, { role: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
+                  Links (optional)</label>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {boardLinks(m).length === 0 && (
+                    <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>No links yet.</div>
+                  )}
+                  {boardLinks(m).map((l, li) => {
+                    const links = boardLinks(m);
+                    const editLink = (patch) => setMemberLinks(i,
+                      links.map((x, xi) => (xi === li ? { ...x, ...patch } : x)));
+                    return (
+                      <div key={l.id ?? li} style={{ display: "grid", gap: 6,
+                        gridTemplateColumns: "1fr 1.4fr auto", alignItems: "center" }}>
+                        <input style={inpSm} placeholder="Label (optional)" value={l.label || ""}
+                          onChange={(e) => editLink({ label: e.target.value })} />
+                        <input style={inpSm} placeholder="https://…" value={l.url || ""}
+                          onChange={(e) => editLink({ url: e.target.value })} />
+                        <button onClick={() => setMemberLinks(i, links.filter((_, xi) => xi !== li))}
+                          style={{ ...delBtn, width: 30, height: 30 }} aria-label="Remove link">
+                          <Trash2 size={14} /></button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button onClick={() => setMemberLinks(i, [...boardLinks(m), { id: Date.now(), label: "", url: "" }])}
+                  style={{ ...miniBtn, marginTop: 8 }}>
+                  <Plus size={13} /> Add link</button>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
+                  Mini bio</label>
+                <textarea style={{ ...inpSm, minHeight: 70, resize: "vertical" }}
+                  value={m.bio || ""} onChange={(e) => edit(i, { bio: e.target.value })} />
+              </div>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button onClick={() => pos > 0 && setBoard(arraySwap(board, i, groupIdxs[pos - 1]))}
+                  disabled={pos === 0} style={pos === 0 ? moveBtnOff : moveBtn}
+                  aria-label={`Move ${m.name} up`}><ArrowUp size={14} /></button>
+                <button onClick={() => pos < groupIdxs.length - 1 && setBoard(arraySwap(board, i, groupIdxs[pos + 1]))}
+                  disabled={pos === groupIdxs.length - 1} style={pos === groupIdxs.length - 1 ? moveBtnOff : moveBtn}
+                  aria-label={`Move ${m.name} down`}><ArrowDown size={14} /></button>
+                <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
+                  style={delBtn} aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
+              </div>
             </div>
-          </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </Section>
     );
   }
