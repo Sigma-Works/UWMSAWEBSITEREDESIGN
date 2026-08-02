@@ -7216,12 +7216,22 @@ function Editor({ tab, data, setData }) {
       id: Date.now(), name: "New member", role: "Role", year: editYear,
       img: "", links: [], bio: "",
     }]);
+    // New years go to the front of the list — that position is what both
+    // this panel and the public site treat as "current" by default, so a
+    // new board just adds their year and it's live immediately with no
+    // reordering needed. Use the arrows below to fix the order manually
+    // if a year is ever added out of sequence.
     const addBoardYear = () => {
       const y = newBoardYear.trim();
       if (!y || boardYears.includes(y)) return;
-      setBoardYears([...boardYears, y]);
+      setBoardYears([y, ...boardYears]);
       setEditYear(y);
       setNewBoardYear("");
+    };
+    const moveBoardYear = (yi, dir) => {
+      const ni = yi + dir;
+      if (ni < 0 || ni >= boardYears.length) return;
+      setBoardYears(arraySwap(boardYears, yi, ni));
     };
     const removeBoardYear = (y) => {
       if (board.some((m) => (m.year || boardYears[0]) === y)) {
@@ -7244,20 +7254,41 @@ function Editor({ tab, data, setData }) {
           Add a new year below for each incoming board rather than deleting the old one.
         </p>
 
-        {/* Year management — switch which term you're editing, or add a new one */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 18 }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Editing year</label>
-          <select style={inpSm} value={editYear} onChange={(e) => setEditYear(e.target.value)}>
-            {boardYears.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-          {boardYears.length > 1 && (
-            <button onClick={() => removeBoardYear(editYear)} style={{ ...delBtn, width: 30, height: 30 }}
-              aria-label={`Remove ${editYear}`}><Trash2 size={14} /></button>
-          )}
-          <input style={{ ...inpSm, width: 110 }} placeholder="e.g. 2026-27" value={newBoardYear}
-            onChange={(e) => setNewBoardYear(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addBoardYear()} />
-          <button onClick={addBoardYear} style={miniBtn}><Plus size={14} /> Add year</button>
+        {/* Year management — top of this list is what the public site (and this
+            panel) show by default, so reorder with the arrows to change which
+            year counts as "current" without touching any code. */}
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
+            Board years (top = shown by default)</label>
+          <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
+            {boardYears.map((y, yi) => (
+              <div key={y} onClick={() => setEditYear(y)} style={{ display: "flex", alignItems: "center",
+                gap: 8, padding: "7px 10px", borderRadius: 8, cursor: "pointer",
+                border: `1px solid ${editYear === y ? "var(--accent)" : "var(--border)"}`,
+                background: editYear === y ? "var(--tint)" : "transparent" }}>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: editYear === y ? 700 : 500 }}>
+                  {y}{yi === 0 && <span style={{ color: "var(--accent)", fontWeight: 700 }}> · current</span>}
+                </span>
+                <button onClick={(e) => { e.stopPropagation(); moveBoardYear(yi, -1); }}
+                  disabled={yi === 0} style={yi === 0 ? moveBtnOff : moveBtn}
+                  aria-label={`Move ${y} up`}><ArrowUp size={14} /></button>
+                <button onClick={(e) => { e.stopPropagation(); moveBoardYear(yi, 1); }}
+                  disabled={yi === boardYears.length - 1} style={yi === boardYears.length - 1 ? moveBtnOff : moveBtn}
+                  aria-label={`Move ${y} down`}><ArrowDown size={14} /></button>
+                {boardYears.length > 1 && (
+                  <button onClick={(e) => { e.stopPropagation(); removeBoardYear(y); }}
+                    style={{ ...delBtn, width: 30, height: 30 }} aria-label={`Remove ${y}`}>
+                    <Trash2 size={14} /></button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <input style={{ ...inpSm, width: 110 }} placeholder="e.g. 2027-28" value={newBoardYear}
+              onChange={(e) => setNewBoardYear(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addBoardYear()} />
+            <button onClick={addBoardYear} style={miniBtn}><Plus size={14} /> Add year</button>
+          </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
