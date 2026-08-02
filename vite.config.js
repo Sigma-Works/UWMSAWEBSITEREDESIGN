@@ -2,10 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // base must match your repo name for GitHub Pages project sites:
-// https://YOUR_USERNAME.github.io/msa-uw/  ->  base: "/UWMSAWEBSITEREDESIGN/"
+// https://YOUR_USERNAME.github.io/msa-uw/  ->  base: "/"
 export default defineConfig({
   plugins: [react()],
-  base: "/UWMSAWEBSITEREDESIGN/",
+  base: "/",
   build: {
     // Split large third-party libs into their own cacheable chunks so the
     // main app bundle stays lean and vendor code caches across deploys.

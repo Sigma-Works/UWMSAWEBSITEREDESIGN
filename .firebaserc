@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "msa-website-dbaba"
+  },
+  "targets": {
+    "msa-website-dbaba": {
+      "hosting": {
+        "production": [
+          "msa-website"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
