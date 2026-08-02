@@ -5889,7 +5889,16 @@ function BoardSection({ data }) {
     ? data.boardYears
     : [...new Set((data.board || []).map((m) => m.year).filter(Boolean))];
   const [year, setYear] = useState(years[0] || "");
+  const [userPicked, setUserPicked] = useState(false);
   const [active, setActive] = useState(null);   // id of the member shown in the modal
+
+  // The page first renders with placeholder seed data before the real saved
+  // content loads in from Supabase a moment later. If the visitor hasn't
+  // touched the dropdown yet, keep following whichever year is first in the
+  // list as that real data arrives, instead of freezing on the placeholder.
+  useEffect(() => {
+    if (!userPicked && years[0] && years[0] !== year) setYear(years[0]);
+  }, [years[0], userPicked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const members = (data.board || []).filter((m) => (m.year || years[0]) === year);
 
@@ -5905,7 +5914,8 @@ function BoardSection({ data }) {
       {years.length > 0 && (
         <Reveal variant="up" distance={16}>
           <div style={{ marginBottom: 28 }}>
-            <select aria-label="Board year" value={year} onChange={(e) => setYear(e.target.value)}
+            <select aria-label="Board year" value={year}
+              onChange={(e) => { setUserPicked(true); setYear(e.target.value); }}
               style={{ padding: "9px 16px", borderRadius: 999, border: "1px solid var(--border)",
                 background: "var(--tint)", color: "var(--accent)", fontFamily: "inherit",
                 fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
@@ -7012,6 +7022,12 @@ function Editor({ tab, data, setData }) {
   const boardYears = data.boardYears && data.boardYears.length ? data.boardYears : ["2025-26"];
   const [editYear, setEditYear] = useState(boardYears[0]);
   const [newBoardYear, setNewBoardYear] = useState("");
+  // Same placeholder-vs-real-data race as the public board section: if the
+  // saved year list finishes loading after this panel already mounted, or a
+  // year gets deleted elsewhere, fall back to whatever's now first.
+  useEffect(() => {
+    if (boardYears.length && !boardYears.includes(editYear)) setEditYear(boardYears[0]);
+  }, [data.boardYears]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (tab === "hero")
     return (
