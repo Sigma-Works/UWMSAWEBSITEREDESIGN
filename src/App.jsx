@@ -4002,8 +4002,10 @@ function Coverflow({ list, n, grad }) {
     if (!scene) return;
     const measure = () => {
       const w = scene.clientWidth || 1;
-      const base = n <= 4 ? 0.5 : n <= 8 ? 0.4 : 0.32;
-      setCardW(Math.max(150, Math.min(420, w * base)));
+      // Bumped ~15% from the original 0.5/0.4/0.32 + 420 cap so photos read
+      // bigger without neighbours crowding off-screen on narrow layouts.
+      const base = n <= 4 ? 0.58 : n <= 8 ? 0.46 : 0.37;
+      setCardW(Math.max(170, Math.min(480, w * base)));
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -5811,17 +5813,31 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
     cursor: "pointer",
   };
 
-  return (
+  // Rendered through a portal straight into <body>, same reason as the
+  // Masjidal popup above: this lightbox opens from inside the Moments
+  // coverflow, whose card stack sits in a `perspective`'d 3D scene. Like
+  // `transform`/`filter`/`backdrop-filter`, `perspective` creates a
+  // containing block for any position:fixed descendant, so without the
+  // portal this overlay was being measured against that small carousel
+  // stage instead of the real viewport — on phones (where the stage is
+  // short) that clipped the modal and pushed the close button out of
+  // reach. Escaping to <body> fixes the positioning outright, and a
+  // z-index above literally everything else on the page (the cursor-ripple
+  // canvas alone runs at 9998) guarantees it's the top-most thing on
+  // screen, tap-target included, rather than fighting z-index tweaks in
+  // whichever component happens to render highest today.
+  return createPortal((
     <div ref={overlayRef} role="dialog" aria-modal="true" aria-label="Photo viewer" className="modalBg"
       onClick={onClose}
-      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,16,.88)",
+      style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(10,8,16,.88)",
         backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20,
         touchAction: "pan-y" }}>
-      <button onClick={onClose} aria-label="Close"
-        style={{ position: "absolute", top: 18, right: 18, width: 40, height: 40, borderRadius: "50%",
+      <button onClick={onClose} aria-label="Close photo"
+        style={{ position: "absolute", top: "max(18px, env(safe-area-inset-top))",
+          right: "max(18px, env(safe-area-inset-right))", width: 44, height: 44, borderRadius: "50%",
           border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
           display: "grid", placeItems: "center", cursor: "pointer" }}>
-        <X size={20} />
+        <X size={22} />
       </button>
       {photos.length > 1 && (
         <button onClick={(e) => { e.stopPropagation(); onNav(-1); }} aria-label="Previous photo"
@@ -5855,7 +5871,7 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
         </button>
       )}
     </div>
-  );
+  ), document.body);
 }
 
 /* ---------- BOARD MEMBERS ---------- */
