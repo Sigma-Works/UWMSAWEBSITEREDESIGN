@@ -4037,8 +4037,8 @@ function Coverflow({ list, n, grad }) {
 
   // Taller than the 4:3 every other photo card on the site uses — this
   // carousel specifically wanted more vertical presence, so it gets its
-  // own ratio instead of matching them.
-  const cardH = cardW * 0.95;
+  // own ratio instead of matching them. 8:6 (height:width).
+  const cardH = cardW * (8 / 6);
   const SCALE_STEP = 0.16, MAX_VISIBLE = 2, DEPTH = cardW * 0.62, TILT = 10, SIDE_TILT = 6;
   const spacing = cardW * 0.72;
   const stageHeight = cardH * 1.5;
