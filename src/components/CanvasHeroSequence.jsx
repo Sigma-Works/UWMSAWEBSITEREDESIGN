@@ -60,6 +60,20 @@ function pickSize() {
   return narrow || slow ? "sm" : "lg";
 }
 
+/* Decide how many frames to actually LOAD. Decoding all 120 frames is the
+   main perf cost on phones. We keep every frame available for desktop
+   scrubbing but only fetch every STEP-th frame on mobile — the
+   nearestLoaded() fallback shows the closest loaded neighbour, so the
+   bloom still reads smoothly with half the frames.
+   STEP=2 → ~60 frames on mobile (roughly half the download and decode). */
+function frameStep() {
+  if (typeof window === "undefined") return 1;
+  const narrow = window.innerWidth < 600;
+  const c = navigator.connection;
+  const slow = c && (c.saveData || /(^|-)2g$/.test(c.effectiveType || ""));
+  return narrow || slow ? 2 : 1;
+}
+
 export default function CanvasHeroSequence({
   reduced = false,
   // Optional callback with scroll progress 0..1. Avoid wiring this to React
@@ -85,6 +99,7 @@ export default function CanvasHeroSequence({
   const targetRef = useRef(0);     // frame the scroll position wants
   const rafRef = useRef(0);
   const sizeRef = useRef("lg");
+  const totalToLoadRef = useRef(FRAME_COUNT); // how many frames we actually load
 
   const [ready, setReady] = useState(false);   // first frame painted
   const [loadPct, setLoadPct] = useState(0);   // preload progress 0..100
@@ -209,7 +224,7 @@ export default function CanvasHeroSequence({
           if (cancelled) return resolve();
           framesRef.current[i] = img;
           loaded++;
-          setLoadPct(Math.round((loaded / FRAME_COUNT) * 100));
+          setLoadPct(Math.round((loaded / totalToLoadRef.current) * 100));
           // first usable frame → reveal + kick the loop
           if (!ready && drawnRef.current < 0) {
             requestAnimationFrame(() => {
@@ -228,14 +243,25 @@ export default function CanvasHeroSequence({
         }
       });
 
+    // Build the list of frame indices we'll actually fetch. Desktop = all
+    // frames; mobile = every STEP-th frame (plus the last one, so the fully
+    // bloomed end state is always crisp). nearestLoaded() covers the gaps.
+    const STEP = frameStep();
+    const indices = [];
+    for (let i = 0; i < FRAME_COUNT; i += STEP) indices.push(i);
+    if (indices[indices.length - 1] !== FRAME_COUNT - 1) indices.push(FRAME_COUNT - 1);
+
+    const TOTAL = indices.length;
+    totalToLoadRef.current = TOTAL;
+
     // Load in scrub order but with a bounded pool so the first frames
     // win the network. Priority: 0,1,2… sequentially is what a top-to-
     // bottom scroll needs, so we just stream in order with a window.
     const POOL = 6;
-    let next = 0;
+    let cursor = 0;
     const pump = async () => {
-      while (!cancelled && next < FRAME_COUNT) {
-        const i = next++;
+      while (!cancelled && cursor < TOTAL) {
+        const i = indices[cursor++];
         await loadOne(i);
       }
     };
