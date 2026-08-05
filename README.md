@@ -1,104 +1,130 @@
 # MSA UW Website
 
-Multi-page site for the University of Washington Muslim Student Association, built with React + Vite. Hosts free on GitHub Pages.
+Website for the **University of Washington Muslim Student Association** — [msauw.org](https://msauw.org).
 
-## What's new (redesign)
+A single-page React app with a live-editable content system: officers sign in through an in-site Admin panel and edit copy, events, board members, gallery photos, sponsors, and merch without touching code. All content is stored in **Supabase** and served through **Firebase Hosting**.
 
-- **Scroll-driven cherry-blossom hero.** An Apple-style pinned HTML5-canvas sequence (270 WebP frames in `public/hero/`) that scrubs 1:1 with the scrollbar. Uses `requestAnimationFrame` throttling, progressive preloading, retina-aware backing store, responsive `lg`/`sm` source sets, and a static poster fallback under `prefers-reduced-motion`. See `src/components/CanvasHeroSequence.jsx`.
-- **Five pages** via a zero-config hash router (safe on GitHub Pages): Home `/`, About `/about`, Prayer `/prayer`, Events `/events`, Community `/community`.
-- **Consolidated Settings menu.** Dark/light mode and the falling-petals toggle now live inside the ⚙ Settings dropdown (and a matching section in the mobile menu), alongside reduce-motion/glow/ripple.
-- **Admin panel** regrouped to match the five pages; the obsolete hero-video config was removed.
-- **Live Instagram** feed for **@msauw** (embeds individual permalinks if set, else the live profile).
+---
 
-### Managing the hero frames
-Frames live in `public/hero/lg/` (1152px) and `public/hero/sm/` (640px), named `frame-000.webp … frame-269.webp`, with `public/hero/poster.webp` as the reduced-motion still. To change the sequence, replace those files (keep the same count and naming) or adjust `FRAME_COUNT` in `CanvasHeroSequence.jsx`.
+## Tech stack
 
-## Quick start (local)
+| Layer | Technology |
+|-------|-----------|
+| UI | React 18 + [Vite 5](https://vitejs.dev/) |
+| Animation | [anime.js](https://animejs.com/) v4 (scroll-driven hero + tree drawing) |
+| Icons | lucide-react |
+| Backend / data | [Supabase](https://supabase.com/) — Postgres (content, subscribers, admin log), Auth, and Storage |
+| Hosting | [Firebase Hosting](https://firebase.google.com/docs/hosting) |
+| Prayer times | AthanPlus / Masjidal widget, kept current by a scheduled GitHub Action |
+| CI/CD | GitHub Actions |
+
+No CSS framework — styles are authored inline / in-component. No server of our own; Supabase is the only backend.
+
+---
+
+## Architecture at a glance
+
+- **Content model.** The whole site reads from one `data` object. On load, the app fetches the single `site_content` row from Supabase (`src/supabase.js` → `loadContent`); if that's empty or unreachable it falls back to the `seed` object defined near the top of `src/App.jsx`. Admin edits are written back to that same row.
+- **Admin panel.** A footer "Admin login" opens a real Supabase-Auth email/password gate. Signed-in officers get inline editing across pages; saves go to Supabase and are recorded in an `admin_log` audit table. Row Level Security (RLS) blocks anonymous writes, so the public key in the front end is safe to ship.
+- **Supabase Storage.** Gallery / sponsor / event / merch images upload to a public `gallery` bucket from the admin panel; the public URL is stored in the content object.
+- **Mailing list.** The signup form inserts into a `subscribers` table (anyone can insert; only admins can read).
+- **Hero animation.** `src/components/CanvasHeroSequence.jsx` renders an Apple-style scroll-scrubbed cherry-blossom image sequence on a canvas (responsive `sm` / `lg` frame sets in `public/hero/`, with a static poster fallback for reduced-motion). `src/QuadTree.jsx` draws a UW-Quad cherry tree branch-by-branch on scroll via anime.js.
+
+---
+
+## Project structure
+
+```
+├── src/
+│   ├── App.jsx                    # entire app: pages, sections, seed content, admin panel
+│   ├── supabase.js                # Supabase client + content/storage/subscriber/log helpers
+│   ├── QuadTree.jsx               # scroll-drawn cherry-blossom tree (anime.js)
+│   ├── components/
+│   │   └── CanvasHeroSequence.jsx # scroll-scrubbed canvas hero sequence
+│   └── main.jsx                   # React entry point
+├── scripts/
+│   └── sync-prayer-times.mjs      # daily prayer-time sync (runs in GitHub Actions)
+├── public/
+│   ├── hero/                      # hero frame sequences (sm/ + lg/) and poster
+│   └── merch/                     # merch images
+├── .github/workflows/
+│   ├── firebase-deploy.yml        # build + deploy to Firebase Hosting on push to main
+│   ├── deploy.yml                 # (legacy) GitHub Pages build/deploy
+│   └── sync-prayer-times.yml      # scheduled daily prayer-time sync
+├── firebase.json                  # Firebase Hosting config (serves dist/)
+├── .firebaserc                    # Firebase project + hosting target
+├── vite.config.js
+└── package.json
+```
+
+---
+
+## Local development
+
+Requires Node.js 20+.
 
 ```bash
 npm install
-npm run dev
+npm run dev      # start the Vite dev server (usually http://localhost:5173)
+npm run build    # production build → dist/
+npm run preview  # preview the production build locally
 ```
 
-Open the URL it prints (usually http://localhost:5173).
+The dev site talks to the live Supabase project, so content and admin login work locally out of the box.
 
-## Host it on GitHub Pages
+---
 
-You'll do this once. After that, every push to `main` redeploys automatically.
+## Deployment (Firebase Hosting)
 
-### 1. Pick a repo name
-This project is preconfigured for a repo named **`msa-uw`**. If you use a different name, change it in **two** places:
-- `vite.config.js` → `base: "/YOUR_REPO_NAME/"`
-- `package.json` → `"homepage": "https://YOUR_USERNAME.github.io/YOUR_REPO_NAME/"`
+The site is hosted on **Firebase Hosting**, Firebase project **`msa-website-dbaba`**, hosting target **`production`** (site `msa-website`), pointed at the custom domain **msauw.org**.
 
-(The `base` must match the repo name exactly, with slashes, or the page loads blank with no styling.)
+### Automatic
 
-### 2. Create the repo and push
-On GitHub, create a new **public** repo (empty — no README). Then, in this folder:
+Every push to `main` triggers `.github/workflows/firebase-deploy.yml`, which runs `npm ci && npm run build` and deploys `dist/` to the live channel via `FirebaseExtended/action-hosting-deploy`.
+
+Requires two repo secrets (**Settings → Secrets and variables → Actions**):
+- `FIREBASE_SERVICE_ACCOUNT` — a Firebase service-account JSON with Hosting deploy permission.
+- `GITHUB_TOKEN` — provided automatically by GitHub.
+
+### Manual
 
 ```bash
-git init
-git add .
-git commit -m "Initial MSA UW site"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/msa-uw.git
-git push -u origin main
+npm install -g firebase-tools
+firebase login
+npm run build
+firebase deploy --only hosting
 ```
 
-### 3. Turn on Pages
-In the repo on GitHub: **Settings → Pages → Build and deployment → Source → GitHub Actions**.
+> A legacy `deploy.yml` (GitHub Pages) still exists but Firebase is the active host. Remove it if you don't want duplicate deploys running.
 
-That's it. The included workflow (`.github/workflows/deploy.yml`) builds the site and publishes it. Watch progress under the **Actions** tab. When it finishes (~1 min), your site is live at:
-
-```
-https://YOUR_USERNAME.github.io/msa-uw/
-```
-
-### Updating the site later
-Edit files, then:
-
-```bash
-git add .
-git commit -m "Update content"
-git push
-```
-
-The site rebuilds and redeploys on its own.
+---
 
 ## Editing content
-Most content lives in the `seed` object near the top of `src/App.jsx` (hero text, prayer times, events, programs, links). You can also use the built-in **Admin** panel (footer → Admin login, demo password `msauw2025`) to edit content live — but note those edits only last for the visitor's browser session. See below.
 
-## Important: the Admin panel is a demo
-The admin login is a front-end-only gate and edits are **not saved** — they disappear on refresh, and the password is visible in the code, so it is not real security. For admins to log in safely and have changes persist for everyone, connect a backend. Two common free options:
-- **Supabase** — Postgres database + real auth, generous free tier.
-- **Firebase** — Firestore + Google/email auth.
+Two ways:
 
-The site reads everything from one `data` object, so swapping the seed data for a backend fetch is the main change needed. Happy to help wire this up.
+1. **Admin panel (preferred).** Footer → **Admin login**, sign in with a Supabase-Auth officer account, and edit inline. Changes save to Supabase and persist for everyone.
+2. **Seed data.** Edit the `seed` object near the top of `src/App.jsx` for the code-level defaults (used before any Supabase content exists). Donation links (Zeffy), section headings, board roster, and stats all live here.
 
-## Custom domain (optional)
-If the MSA has a domain (e.g. `msauw.org`), add it under **Settings → Pages → Custom domain**, then set `base: "/"` in `vite.config.js` and redeploy.
+### Supabase setup
 
-## Tech
-React 18, Vite 5, lucide-react icons. No other runtime dependencies.
+`src/supabase.js` documents the required schema inline. In short, you need:
+- a `site_content` table with a single row (`id = 1`) holding a JSON `data` column;
+- a `subscribers` table (public insert, admin-only read);
+- an `admin_log` table (admin insert/read);
+- a **public** Storage bucket named `gallery`;
+- RLS policies as noted in the file, and officer accounts created under Supabase **Auth**.
 
-## Prayer times (Masjidal — auto-updates daily)
+The Supabase URL and **publishable** key are committed on purpose — they're public by design, and security comes from RLS, not from hiding the key. The **secret** service-role key is never committed; it lives only as a GitHub Actions secret (below).
 
-The prayer times card can show a live Masjidal widget that recalculates every
-day on its own — no daily editing. The current MSA site already uses Masjidal
-("Powered by Masjidal"), so reuse that account.
+---
 
-You need ONE of these, from whoever manages the MSA's Masjidal account:
+## Prayer times
 
-1. **Masjid ID** — Log in at masjidal.com → Settings → Web Integration; the
-   Masjid ID is shown in red. Put it in `src/App.jsx` → `seed.prayerTimes.masjidalId`.
+The prayer-times card and nav countdown use the MSA's **Masjidal / AthanPlus** widget (Masjid ID set in content at `prayerTimes.masjidalId`, or a full embed string in `prayerTimes.masjidalEmbed`).
 
-2. **Embed code** (most reliable) — On that same Web Integration page, or by
-   copying from the current MSA website, grab the full widget code (an
-   `<iframe...>` or a `<div>`+`<script>` block). Paste the whole thing as a
-   string into `seed.prayerTimes.masjidalEmbed`.
+Because that feed can't be fetched cross-origin from a browser (CORS), `.github/workflows/sync-prayer-times.yml` runs `scripts/sync-prayer-times.mjs` once a day (cron `0 8 * * *`, ~midnight Pacific). Running server-side, it fetches today's adhan times and writes the five prayer fields back into the Supabase `site_content` row, so the countdown's fallback times stay current automatically.
 
-If both fields are empty, the card shows the manual times in the seed data
-(which you'd have to edit by hand — the Masjidal widget is the better path).
+Requires the repo secret `SUPABASE_SERVICE_ROLE_KEY` (the Supabase secret API key — bypasses RLS, so it must **only** ever live as a GitHub secret).
 
-The Jummah line and Announcement below the times are always manual — edit
-`seed.prayerTimes.jummah` and `seed.prayerTimes.announcement`.
+The **Jummah** time and the **announcement** line below the times are always edited manually in content.
