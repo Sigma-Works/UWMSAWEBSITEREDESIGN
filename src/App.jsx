@@ -6197,42 +6197,15 @@ function MerchSection({ data, onNav }) {
         </Reveal>
       </div>
 
-      {/* Hoodie fronts */}
-      <div style={{ display: "grid", gap: 22,
-        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", maxWidth: 760,
-        margin: "0 auto" }}>
-        {(items.length ? items : hoodies).map((h, n) => (
-          <Reveal key={h.key ?? h.id ?? n} delay={n * 90} variant="rise" distance={26}>
-            <div className="lift" style={{ ...card, overflow: "hidden", padding: 0, height: "100%",
-              position: "relative" }}>
-              <div style={{ position: "relative", aspectRatio: "1 / 1",
-                background: "linear-gradient(160deg, var(--tint), var(--surface))" }}>
-                <img src={h.img} alt={h.name || "MSA merch"} loading="lazy" decoding="async"
-                  style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
-                <div style={{ position: "absolute", top: 14, left: 14, padding: "6px 13px",
-                  borderRadius: 999, background: "rgba(20,17,24,.78)", color: "#fff",
-                  fontSize: 11, fontWeight: 700, letterSpacing: ".8px", textTransform: "uppercase",
-                  backdropFilter: "blur(4px)" }}>
-                  Coming soon
-                </div>
-                {h.word && (
-                  <div style={{ position: "absolute", bottom: 12, right: 16, textAlign: "right",
-                    color: "var(--accent)" }}>
-                    <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1, direction: "rtl" }}>{h.word}</div>
-                    {h.en && <div style={{ fontSize: 11, letterSpacing: "1.4px",
-                      textTransform: "uppercase", color: "var(--text-faint)", marginTop: 3 }}>{h.en}</div>}
-                  </div>
-                )}
-              </div>
-              {(h.name || h.note) && (
-                <div style={{ padding: "16px 18px" }}>
-                  {h.name && <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}>{h.name}</div>}
-                  {h.note && <div style={{ fontSize: 13.5, color: "var(--text-muted)", marginTop: 3 }}>{h.note}</div>}
-                </div>
-              )}
-            </div>
-          </Reveal>
-        ))}
+      {/* Product photos — same rotating coverflow carousel as "Moments from
+          the year" on the home page (click the centered photo to zoom),
+          instead of a static grid. Falls back to the built-in hoodie
+          renders until an admin uploads real product photos. */}
+      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+        <Gallery items={(items.length ? items : hoodies).map((h, n) => ({
+          id: h.id ?? h.key ?? n, img: h.img,
+          caption: [h.name, h.note].filter(Boolean).join(" · "),
+        }))} />
       </div>
 
       {/* Back designs — the cherry-blossom calligraphy, shown as one wide render */}
@@ -7853,6 +7826,10 @@ function Editor({ tab, data, setData }) {
         </Field>
         <Field label="Intro line">
           <input style={inp} value={mc.intro || ""} onChange={(e) => setM({ intro: e.target.value })} />
+        </Field>
+        <Field label="Store link (the button beneath the photos sends people here)">
+          <input style={inp} value={mc.orderUrl || ""} placeholder="https://…"
+            onChange={(e) => setM({ orderUrl: e.target.value })} />
         </Field>
         <label style={{ display: "flex", alignItems: "center", gap: 10, margin: "6px 0 4px",
           cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
