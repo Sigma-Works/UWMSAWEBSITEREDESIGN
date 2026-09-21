@@ -1243,8 +1243,9 @@ const seed = {
   // are URLs (upload via the Merch admin tab). `orderUrl` powers the main CTA.
   merch: {
     eyebrow: "MSA Merch",
-    title: "Coming soon",
-    intro: "A first look at what's dropping. Ordering details go live the moment it's available.",
+    title: "MSA 2026-27 Merch",
+    intro: "A brown cherry-blossom themed hoodie and a black cherry-blossom themed "
+      + "zip-up jacket — grab yours below.",
     available: false,       // flip to true (in admin) once orderable
     orderUrl: MERCH_URL,    // primary "order online" link
     items: [
@@ -6170,7 +6171,9 @@ function MerchSection({ data, onNav }) {
         <Parallax speed={-.08} float style={{ bottom: 60, left: "5%" }}>
           <PetalIcon size={22} color="var(--accent)" opacity={.4} /></Parallax>
       </>}>
-      {/* Header */}
+      {/* Header — eyebrow/title/intro all come from the admin Merch tab now;
+          they used to be hardcoded here regardless of what was typed in
+          admin, which is why editing them there never changed anything. */}
       <div style={{ textAlign: "center", maxWidth: 760, margin: "0 auto 40px" }}>
         <Reveal variant="up" distance={16}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
@@ -6179,20 +6182,20 @@ function MerchSection({ data, onNav }) {
             border: "1px solid var(--border)", marginBottom: 18 }}>
             <ShoppingBag size={14} color="var(--accent)" />
             <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.6px",
-              textTransform: "uppercase", color: "var(--accent)" }}>MSA UW Merch · 26–27</span>
+              textTransform: "uppercase", color: "var(--accent)" }}>{m.eyebrow || "MSA UW Merch"}</span>
           </div>
         </Reveal>
         <Reveal variant="up" distance={20} delay={70}>
           <h2 style={{ margin: "0 0 14px", fontSize: "clamp(40px,8vw,76px)", fontWeight: 800,
             lineHeight: 1.02, letterSpacing: "-1.5px", color: "var(--text)" }}>
-            Coming Soon
+            {m.title || "Coming Soon"}
           </h2>
         </Reveal>
         <Reveal variant="up" distance={16} delay={140}>
           <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "clamp(15px,2vw,18px)",
             lineHeight: 1.65 }}>
-            A cherry-blossom capsule — <b>Taqdeer</b> (decree) and <b>Tawakkul</b> (trust).
-            Drops soon, insha’Allah. Ordering details go live the moment it’s available.
+            {m.intro || "A cherry-blossom capsule — Taqdeer (decree) and Tawakkul (trust). "
+              + "Drops soon, insha’Allah. Ordering details go live the moment it’s available."}
           </p>
         </Reveal>
       </div>
@@ -6200,12 +6203,16 @@ function MerchSection({ data, onNav }) {
       {/* Product photos — same rotating coverflow carousel as "Moments from
           the year" on the home page (click the centered photo to zoom),
           instead of a static grid. Falls back to the built-in hoodie
-          renders until an admin uploads real product photos. */}
+          renders until an admin uploads real product photos. Each product
+          can have multiple photos now (front/back/worn/etc.) — they all
+          flatten into this one carousel, one photo per card, captioned
+          with which product they belong to. */}
       <div style={{ maxWidth: 760, margin: "0 auto" }}>
-        <Gallery items={(items.length ? items : hoodies).map((h, n) => ({
-          id: h.id ?? h.key ?? n, img: h.img,
-          caption: [h.name, h.note].filter(Boolean).join(" · "),
-        }))} />
+        <Gallery items={(items.length ? items : hoodies).flatMap((h, n) => {
+          const caption = [h.name, h.note].filter(Boolean).join(" · ");
+          const photos = h.images && h.images.length ? h.images : (h.img ? [h.img] : []);
+          return photos.map((img, pi) => ({ id: `${h.id ?? h.key ?? n}-${pi}`, img, caption }));
+        })} />
       </div>
 
       {/* Back designs — the cherry-blossom calligraphy, shown as one wide render */}
@@ -7845,7 +7852,15 @@ function Editor({ tab, data, setData }) {
             style={miniBtn}><Plus size={14} /> Add</button>
         </div>
         <div style={{ display: "grid", gap: 12 }}>
-          {items.map((it, i) => (
+          {items.map((it, i) => {
+            // `images` is the current field; a lone legacy `img` (from
+            // before multiple photos per product were supported) still
+            // reads fine here — it just shows as this product's one photo
+            // until edited, same pattern boardLinks() uses for the old
+            // single-href board members.
+            const imgs = it.images && it.images.length ? it.images : (it.img ? [it.img] : []);
+            const setImgs = (next) => editI(i, { images: next, img: "" });
+            return (
             <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
               padding: 14, display: "grid", gap: 8, position: "relative" }}>
               <div><label style={lbl}>Name</label>
@@ -7854,13 +7869,34 @@ function Editor({ tab, data, setData }) {
               <div><label style={lbl}>Note (color, sizing…)</label>
                 <input style={inpSm} value={it.note || ""} placeholder="Off-white · unisex"
                   onChange={(e) => editI(i, { note: e.target.value })} /></div>
-              <ImageField label="Product photo" value={it.img || ""} folder="merch"
-                onChange={(url) => editI(i, { img: url })} />
+              <div>
+                <label style={lbl}>Photos (front, back, worn — add as many as you like)</label>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {imgs.map((url, ii) => (
+                    <div key={ii} style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <ImageField label={`Photo ${ii + 1}`} value={url} folder="merch"
+                          onChange={(newUrl) => {
+                            const next = imgs.slice(); next[ii] = newUrl;
+                            setImgs(next.filter(Boolean));
+                          }} />
+                      </div>
+                      <button type="button" onClick={() => setImgs(imgs.filter((_, xi) => xi !== ii))}
+                        style={{ ...delBtn, width: 30, height: 30, marginBottom: 12 }}
+                        aria-label={`Remove photo ${ii + 1}`}><Trash2 size={14} /></button>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setImgs([...imgs, ""])}
+                  style={{ ...miniBtn, marginTop: imgs.length ? 4 : 0 }}>
+                  <Plus size={13} /> Add photo</button>
+              </div>
               <button onClick={() => setM({ items: items.filter((_, n) => n !== i) })}
                 style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
                 aria-label="Delete product"><Trash2 size={15} /></button>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
