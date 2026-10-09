@@ -56,18 +56,49 @@ function safeName(name) {
   return `${base}-${Date.now().toString(36)}.${ext}`;
 }
 
+// Shrink a photo before upload: longest side capped at MAX_DIM, re-encoded as
+// WebP. This keeps every stored image small (typically 100-300 KB) so site
+// visitors don't burn through Supabase's bandwidth quota. GIFs/SVGs and
+// anything the browser can't decode are uploaded unchanged.
+const MAX_DIM = 1600;
+const WEBP_QUALITY = 0.82;
+async function compressImage(file) {
+  if (/image\/(gif|svg)/.test(file.type)) return file;
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const scale = Math.min(1, MAX_DIM / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/webp", WEBP_QUALITY));
+    if (!blob || blob.size >= file.size) return file; // already smaller; keep original
+    const name = file.name.replace(/\.[^.]+$/, "") + ".webp";
+    return new File([blob], name, { type: "image/webp" });
+  } catch {
+    return file;
+  }
+}
+
 // Upload one image into a folder: "gallery" | "sponsors" | "events".
 // Returns { ok: true, url } or { ok: false, error }.
-export async function uploadImage(file, folder = "gallery") {
-  if (!file) return { ok: false, error: "No file selected." };
-  if (!file.type?.startsWith("image/")) return { ok: false, error: "That file isn't an image." };
+export async function uploadImage(rawFile, folder = "gallery") {
+  if (!rawFile) return { ok: false, error: "No file selected." };
+  if (!rawFile.type?.startsWith("image/")) return { ok: false, error: "That file isn't an image." };
+  if (rawFile.size > 30 * 1024 * 1024)
+    return { ok: false, error: "Image is larger than 30MB — please pick a smaller one." };
+
+  const file = await compressImage(rawFile);
   if (file.size > 5 * 1024 * 1024)
-    return { ok: false, error: "Image is larger than 5MB — please compress it first." };
+    return { ok: false, error: "Image is still larger than 5MB after compression — please pick a smaller one." };
 
   const path = `${folder}/${safeName(file.name)}`;
+  // Filenames are unique (timestamped), so browsers/CDN can cache for a year.
   const { error } = await supabase.storage
     .from(BUCKET)
-    .upload(path, file, { cacheControl: "3600", upsert: false });
+    .upload(path, file, { cacheControl: "31536000", upsert: false });
 
   if (error) {
     const msg = /bucket/i.test(error.message)
