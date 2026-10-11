@@ -60,6 +60,35 @@ function safeName(name) {
 // WebP. This keeps every stored image small (typically 100-300 KB) so site
 // visitors don't burn through Supabase's bandwidth quota. GIFs/SVGs and
 // anything the browser can't decode are uploaded unchanged.
+// ── Cloudinary CDN (optional) ───────────────────────────────────────────
+// Fill BOTH in to serve new uploads from Cloudinary's CDN instead of Supabase
+// Storage (which has a small free bandwidth quota). Leave blank to keep using
+// Supabase. Neither value is secret. The preset must be an UNSIGNED upload
+// preset (Cloudinary → Settings → Upload → Upload presets).
+const CLOUDINARY_CLOUD_NAME = "a5fma8ok";
+const CLOUDINARY_UPLOAD_PRESET = "msa-unsigned";
+
+// Insert auto-format/quality/size transforms so every visitor gets a small,
+// modern-format (WebP/AVIF) image regardless of what was uploaded.
+function cloudinaryOptimized(url) {
+  return url.replace("/upload/", "/upload/f_auto,q_auto,w_1600,c_limit/");
+}
+
+async function uploadToCloudinary(file) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+  try {
+    const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+      { method: "POST", body });
+    const j = await r.json();
+    if (!r.ok || !j.secure_url) return { ok: false, error: j?.error?.message || "Cloudinary upload failed." };
+    return { ok: true, url: cloudinaryOptimized(j.secure_url), path: j.public_id };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
+
 const MAX_DIM = 1600;
 const WEBP_QUALITY = 0.82;
 async function compressImage(file) {
@@ -93,6 +122,8 @@ export async function uploadImage(rawFile, folder = "gallery") {
   const file = await compressImage(rawFile);
   if (file.size > 5 * 1024 * 1024)
     return { ok: false, error: "Image is still larger than 5MB after compression — please pick a smaller one." };
+
+  if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET) return uploadToCloudinary(file);
 
   const path = `${folder}/${safeName(file.name)}`;
   // Filenames are unique (timestamped), so browsers/CDN can cache for a year.
