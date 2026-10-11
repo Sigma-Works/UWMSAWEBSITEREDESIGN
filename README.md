@@ -1,130 +1,130 @@
 # MSA UW Website
 
-Website for the **University of Washington Muslim Student Association** — [msauw.org](https://msauw.org).
+The official website of the Muslim Student Association at the University of Washington. Live at [msauw.org](https://msauw.org).
 
-A single-page React app with a live-editable content system: officers sign in through an in-site Admin panel and edit copy, events, board members, gallery photos, sponsors, and merch without touching code. All content is stored in **Supabase** and served through **Firebase Hosting**.
+This is a single-page React application with a built-in content management panel. Officers can update events, board members, photos, sponsors, merch and page copy from the browser, with no code changes or redeploys. The site was redesigned from a static page into a maintainable platform that can be handed from one board to the next.
 
----
+## Highlights
+
+- Admin panel for non-technical officers, protected by Supabase Auth
+- Board roster organized by year, with the newest year shown by default
+- Scroll-driven cherry blossom hero rendered on a canvas, with a static fallback for reduced motion
+- Monthly events calendar, weekly events, and a live prayer times widget with a countdown
+- Photo carousels and a lightbox, with image uploads handled in the admin panel
+- Mailing list signup, search across all content, dark mode, and a mobile-first layout
+- Event-level Google Analytics tracking for page views, sections, clicks and signups
 
 ## Tech stack
 
-| Layer | Technology |
-|-------|-----------|
-| UI | React 18 + [Vite 5](https://vitejs.dev/) |
-| Animation | [anime.js](https://animejs.com/) v4 (scroll-driven hero + tree drawing) |
+| Area | Technology |
+| --- | --- |
+| UI | React 18, Vite 5 |
+| Animation | anime.js v4, HTML canvas, CSS |
 | Icons | lucide-react |
-| Backend / data | [Supabase](https://supabase.com/) — Postgres (content, subscribers, admin log), Auth, and Storage |
-| Hosting | [Firebase Hosting](https://firebase.google.com/docs/hosting) |
-| Prayer times | AthanPlus / Masjidal widget, kept current by a scheduled GitHub Action |
+| Data and auth | Supabase (Postgres, Auth, Storage) |
+| Images | Cloudinary CDN, with Supabase Storage as a fallback |
+| Hosting | Firebase Hosting |
 | CI/CD | GitHub Actions |
+| Analytics | Google Analytics 4 |
 
-No CSS framework — styles are authored inline / in-component. No server of our own; Supabase is the only backend.
+There is no custom server. The browser talks to Supabase directly, and security is enforced with Row Level Security policies in the database.
 
----
+## Architecture
 
-## Architecture at a glance
+### Content model
 
-- **Content model.** The whole site reads from one `data` object. On load, the app fetches the single `site_content` row from Supabase (`src/supabase.js` → `loadContent`); if that's empty or unreachable it falls back to the `seed` object defined near the top of `src/App.jsx`. Admin edits are written back to that same row.
-- **Admin panel.** A footer "Admin login" opens a real Supabase-Auth email/password gate. Signed-in officers get inline editing across pages; saves go to Supabase and are recorded in an `admin_log` audit table. Row Level Security (RLS) blocks anonymous writes, so the public key in the front end is safe to ship.
-- **Supabase Storage.** Gallery / sponsor / event / merch images upload to a public `gallery` bucket from the admin panel; the public URL is stored in the content object.
-- **Mailing list.** The signup form inserts into a `subscribers` table (anyone can insert; only admins can read).
-- **Hero animation.** `src/components/CanvasHeroSequence.jsx` renders an Apple-style scroll-scrubbed cherry-blossom image sequence on a canvas (responsive `sm` / `lg` frame sets in `public/hero/`, with a static poster fallback for reduced-motion). `src/QuadTree.jsx` draws a UW-Quad cherry tree branch-by-branch on scroll via anime.js.
+All site content lives in one JSON object. On load, the app reads a single `site_content` row from Supabase and merges it over a `seed` object defined in `src/App.jsx`. If Supabase is unreachable, the site renders the seed content instead, so the page never goes blank. Saving from the admin panel writes the whole object back to the same row.
 
----
+### Routing
+
+The app uses a small hash router (`/#/about`, `/#/events`, and so on). Hash routes work on any static host without server rewrites. Six pages are defined in a `PAGES` array, and each page lists the ordered sections it renders.
+
+### Admin panel
+
+Officers sign in with Supabase Auth. The editor is split into tabs for each content type, including board, events, gallery, sponsors, merch, programs and mailing list. Edits are written to Supabase and recorded in an `admin_log` table for an audit trail. Free-text link fields pass through a `safeHref` helper that blocks unsafe URL schemes.
+
+### Images
+
+Uploads are resized in the browser to a maximum of 1600px and converted to WebP before they leave the page. They are then sent to Cloudinary, which serves them through its CDN with automatic format and quality settings. If Cloudinary is not configured, uploads fall back to the Supabase `gallery` bucket. Images in `public/` are cached by Firebase Hosting for a year.
+
+### Hero animation
+
+`src/components/CanvasHeroSequence.jsx` draws a 120 frame image sequence onto a single canvas, scrubbed by scroll position. It uses requestAnimationFrame throttling, a small preload pool, two resolution sets for phones and desktops, and a retina-aware canvas. With reduced motion enabled, it shows a single poster frame instead.
+
+### Prayer times
+
+Prayer times come from an AthanPlus (Masjidal) widget. Browsers cannot fetch that feed directly because of CORS, so a scheduled GitHub Action runs `scripts/sync-prayer-times.mjs` once a day. It reads the day's times on the server and writes them into the Supabase content row, which the countdown uses.
+
+### Analytics
+
+`src/analytics.js` attaches one delegated click listener and sends GA4 events: `page_view`, `section_view`, `nav_click`, `button_click`, `link_click`, `social_click`, `outbound_click`, `merch_store_click`, `email_click`, `phone_click`, `photo_open` and `mailing_signup`. No personal data is collected, and tracking pauses while an officer is signed in.
 
 ## Project structure
 
 ```
+.
 ├── src/
-│   ├── App.jsx                    # entire app: pages, sections, seed content, admin panel
-│   ├── supabase.js                # Supabase client + content/storage/subscriber/log helpers
-│   ├── QuadTree.jsx               # scroll-drawn cherry-blossom tree (anime.js)
-│   ├── components/
-│   │   └── CanvasHeroSequence.jsx # scroll-scrubbed canvas hero sequence
-│   └── main.jsx                   # React entry point
+│   ├── App.jsx                     # pages, sections, seed content, admin panel
+│   ├── supabase.js                 # Supabase client, uploads, mailing list, audit log
+│   ├── analytics.js                # GA4 event tracking
+│   ├── QuadTree.jsx                # scroll-drawn cherry tree
+│   ├── main.jsx                    # entry point
+│   └── components/
+│       └── CanvasHeroSequence.jsx  # scroll-driven canvas hero
 ├── scripts/
-│   └── sync-prayer-times.mjs      # daily prayer-time sync (runs in GitHub Actions)
-├── public/
-│   ├── hero/                      # hero frame sequences (sm/ + lg/) and poster
-│   └── merch/                     # merch images
+│   └── sync-prayer-times.mjs       # daily prayer time sync
+├── public/                         # hero frames, merch images, video, logos
 ├── .github/workflows/
-│   ├── firebase-deploy.yml        # build + deploy to Firebase Hosting on push to main
-│   ├── deploy.yml                 # (legacy) GitHub Pages build/deploy
-│   └── sync-prayer-times.yml      # scheduled daily prayer-time sync
-├── firebase.json                  # Firebase Hosting config (serves dist/)
-├── .firebaserc                    # Firebase project + hosting target
-├── vite.config.js
-└── package.json
+│   ├── firebase-deploy.yml         # build and deploy on push to main
+│   └── sync-prayer-times.yml       # scheduled prayer time sync
+├── firebase.json                   # hosting config and cache headers
+├── vite.config.js                  # build config and vendor chunk splitting
+└── index.html                      # app shell and analytics snippet
 ```
 
----
+## Getting started
 
-## Local development
-
-Requires Node.js 20+.
+You need Node.js 20 or newer.
 
 ```bash
 npm install
-npm run dev      # start the Vite dev server (usually http://localhost:5173)
-npm run build    # production build → dist/
-npm run preview  # preview the production build locally
+npm run dev       # local dev server at http://localhost:5173
+npm run build     # production build in dist/
+npm run preview   # serve the production build locally
 ```
 
-The dev site talks to the live Supabase project, so content and admin login work locally out of the box.
+The local site connects to the live Supabase project, so content and admin login work out of the box.
 
----
+## Configuration
 
-## Deployment (Firebase Hosting)
+**Supabase.** The project URL and publishable key are in `src/supabase.js`. These are public by design, because Row Level Security controls access. The schema is documented in comments in that file. It needs a `site_content` table with one row, a `subscribers` table, an `admin_log` table, a public `gallery` storage bucket, and officer accounts under Supabase Auth.
 
-The site is hosted on **Firebase Hosting**, Firebase project **`msa-website-dbaba`**, hosting target **`production`** (site `msa-website`), pointed at the custom domain **msauw.org**.
+**Cloudinary.** Set `CLOUDINARY_CLOUD_NAME` and `CLOUDINARY_UPLOAD_PRESET` at the top of `src/supabase.js`. The preset must be unsigned. Leave both blank to use Supabase Storage instead.
 
-### Automatic
+**Analytics.** The measurement ID is set in `index.html`. Event parameters such as `section` and `link_text` need to be registered as custom dimensions in GA4 before they appear in reports.
 
-Every push to `main` triggers `.github/workflows/firebase-deploy.yml`, which runs `npm ci && npm run build` and deploys `dist/` to the live channel via `FirebaseExtended/action-hosting-deploy`.
+## Deployment
 
-Requires two repo secrets (**Settings → Secrets and variables → Actions**):
-- `FIREBASE_SERVICE_ACCOUNT` — a Firebase service-account JSON with Hosting deploy permission.
-- `GITHUB_TOKEN` — provided automatically by GitHub.
+Every push to `main` runs `firebase-deploy.yml`, which installs dependencies, builds the site and deploys `dist/` to Firebase Hosting under the `production` target. It needs one repository secret:
 
-### Manual
+- `FIREBASE_SERVICE_ACCOUNT`: a service account key with Hosting deploy access
 
-```bash
-npm install -g firebase-tools
-firebase login
-npm run build
-firebase deploy --only hosting
-```
+The daily prayer time workflow needs a second secret:
 
-> A legacy `deploy.yml` (GitHub Pages) still exists but Firebase is the active host. Remove it if you don't want duplicate deploys running.
+- `SUPABASE_SERVICE_ROLE_KEY`: bypasses RLS, so it must only ever live as a GitHub secret
 
----
+## Performance notes
 
-## Editing content
+- Vendor code is split into separate cacheable chunks (React, anime.js, icons)
+- Images are lazy-loaded and compressed on upload
+- Static assets are served with long-lived immutable cache headers
+- The hero loads frames progressively and serves smaller frames to phones
+- Content is fetched in a single request
 
-Two ways:
+## Maintaining the site
 
-1. **Admin panel (preferred).** Footer → **Admin login**, sign in with a Supabase-Auth officer account, and edit inline. Changes save to Supabase and persist for everyone.
-2. **Seed data.** Edit the `seed` object near the top of `src/App.jsx` for the code-level defaults (used before any Supabase content exists). Donation links (Zeffy), section headings, board roster, and stats all live here.
+Most updates happen in the admin panel, so a new board can take over without touching the repository. Code changes are only needed for new features or layout work. For code-level defaults, edit the `seed` object near the top of `src/App.jsx`.
 
-### Supabase setup
+## Credits
 
-`src/supabase.js` documents the required schema inline. In short, you need:
-- a `site_content` table with a single row (`id = 1`) holding a JSON `data` column;
-- a `subscribers` table (public insert, admin-only read);
-- an `admin_log` table (admin insert/read);
-- a **public** Storage bucket named `gallery`;
-- RLS policies as noted in the file, and officer accounts created under Supabase **Auth**.
-
-The Supabase URL and **publishable** key are committed on purpose — they're public by design, and security comes from RLS, not from hiding the key. The **secret** service-role key is never committed; it lives only as a GitHub Actions secret (below).
-
----
-
-## Prayer times
-
-The prayer-times card and nav countdown use the MSA's **Masjidal / AthanPlus** widget (Masjid ID set in content at `prayerTimes.masjidalId`, or a full embed string in `prayerTimes.masjidalEmbed`).
-
-Because that feed can't be fetched cross-origin from a browser (CORS), `.github/workflows/sync-prayer-times.yml` runs `scripts/sync-prayer-times.mjs` once a day (cron `0 8 * * *`, ~midnight Pacific). Running server-side, it fetches today's adhan times and writes the five prayer fields back into the Supabase `site_content` row, so the countdown's fallback times stay current automatically.
-
-Requires the repo secret `SUPABASE_SERVICE_ROLE_KEY` (the Supabase secret API key — bypasses RLS, so it must **only** ever live as a GitHub secret).
-
-The **Jummah** time and the **announcement** line below the times are always edited manually in content.
+Built and maintained by [Saad Ahmed](https://www.linkedin.com/in/sssaaaddd/) and [Zahid Mannan](https://www.linkedin.com/in/zahidmannan/) for the [UW MSA](https://www.instagram.com/msauw/?hl=en).
