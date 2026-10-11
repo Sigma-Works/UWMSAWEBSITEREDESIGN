@@ -8,7 +8,8 @@
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
 
-      gtag('config', 'G-G4KVHEMGZ3');
+      // page_view is sent manually per route (the site is a hash-router SPA)
+      gtag('config', 'G-G4KVHEMGZ3', { send_page_view: false });
     </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
