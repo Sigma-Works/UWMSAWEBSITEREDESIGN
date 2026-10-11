@@ -7,6 +7,7 @@ import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromU
 const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
 // Scroll-driven cherry-blossom canvas hero (270-frame sequence). Kept in its
 // own module so the frame-preload logic and canvas loop stay isolated.
+import { initAnalytics, track, trackPageView, observeSections, setTrackingPaused } from "./analytics.js";
 import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
 // Bold anime.js-driven hero: curtain intro, orchestrated headline reveal,
 // 3D cursor tilt on the medallion, magnetic CTAs. Self-contained — no
@@ -1506,6 +1507,17 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   // Curtain-up moment before the hero animates in — see HeroCurtain below.
   const [curtainDone, setCurtainDone] = useState(false);
+
+  // Analytics: one global click listener + page/section view events.
+  useEffect(() => { initAnalytics(); }, []);
+  useEffect(() => { setTrackingPaused(isAdmin || adminOpen); }, [isAdmin, adminOpen]);
+  useEffect(() => {
+    trackPageView(route);
+    // sections render after the route swaps in; give them a beat to mount
+    let stop = () => {};
+    const t = setTimeout(() => { stop = observeSections(); }, 600);
+    return () => { clearTimeout(t); stop(); };
+  }, [route, loaded]);
 
   // Real load progress (0-100) for the loading screen's logo fill.
   //
@@ -4996,6 +5008,7 @@ function MailingList({ data }) {
     const res = await subscribe({ firstName: first, lastName: last, email: emailClean, status });
     setBusy(false);
     if (res.ok) {
+      track("mailing_signup", { already_subscribed: !!res.already });
       setMsg({ ok: true, text: res.already
         ? "You're already on the list — see you next week."
         : "You're in. Look out for the next one." });
