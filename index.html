@@ -1,8 +1,17 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-G4KVHEMGZ3"></script>
+    <!-- charset + viewport first: the browser needs them before parsing anything else -->
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MSA UW — Muslim Student Association, University of Washington</title>
+
+    <!-- Google Analytics 4. The tiny stub below records events into
+         dataLayer immediately; the real gtag.js library (~170 KB, and the
+         single biggest main-thread cost on the page) is only fetched after
+         the page has loaded and the browser is idle. Queued events are sent
+         as soon as it arrives, so nothing is lost.
+         Microsoft Clarity is loaded separately from src/analytics.js. -->
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
@@ -10,12 +19,39 @@
 
       // page_view is sent manually per route (the site is a hash-router SPA)
       gtag('config', 'G-G4KVHEMGZ3', { send_page_view: false });
+
+      (function loadGtagWhenIdle() {
+        function inject() {
+          var s = document.createElement('script');
+          s.async = true;
+          s.src = 'https://www.googletagmanager.com/gtag/js?id=G-G4KVHEMGZ3';
+          document.head.appendChild(s);
+        }
+        function schedule() {
+          if ('requestIdleCallback' in window) requestIdleCallback(inject, { timeout: 5000 });
+          else setTimeout(inject, 1500);
+        }
+        if (document.readyState === 'complete') schedule();
+        else window.addEventListener('load', schedule, { once: true });
+      })();
     </script>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Performance: open connections early to the origins every visit needs.
+         • Google Fonts (CSS on googleapis, font files on gstatic)
+         • Supabase, where the site content JSON is fetched from -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://rhngkfkvaecviwoezzvv.supabase.co" crossorigin />
+    <!-- Fonts load here (not via @import inside the app's JS) so they start
+         downloading immediately. display=swap shows fallback text right away. -->
+    <link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" />
+
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <!-- The hero poster is the largest thing on first paint (LCP), so it
+         gets a high-priority preload. The 120-frame bloom animation is only
+         downloaded if the visitor presses "Play" (CanvasHeroSequence.jsx). -->
     <link rel="preload" as="image" href="/hero/poster.webp" fetchpriority="high" />
-    <title>MSA UW — Muslim Student Association, University of Washington</title>
     <meta
       name="description"
       content="The Muslim Student Association at the University of Washington. Prayer spaces and times, weekly events, programs, and ways to connect with the community."
@@ -29,6 +65,14 @@
     <meta property="og:type" content="website" />
   </head>
   <body>
+    <!-- Shown only if JavaScript is off: the whole site is a React app. -->
+    <noscript>
+      <p style="font-family: system-ui, sans-serif; padding: 24px; max-width: 640px">
+        The MSA UW website needs JavaScript to run. You can still reach us at
+        <a href="mailto:msauw@uw.edu">msauw@uw.edu</a> or on Instagram at
+        <a href="https://instagram.com/msauw">@msauw</a>.
+      </p>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

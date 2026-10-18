@@ -1,8 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// base must match your repo name for GitHub Pages project sites:
-// https://YOUR_USERNAME.github.io/msa-uw/  ->  base: "/"
+/* Vite build configuration.
+   • base "/": the site is served from the domain root (msauw.org on
+     Firebase Hosting). A GitHub Pages *project* site would need
+     base: "/<repo-name>/" instead.
+   • manualChunks: long-lived vendor code goes in its own cacheable files.
+     Code that most visitors never need (admin dashboard, supabase-js,
+     policy pages, the Quad tree) is split automatically because App.jsx
+     loads it with dynamic import() / React.lazy. */
 export default defineConfig({
   plugins: [react()],
   base: "/",

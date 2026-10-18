@@ -8,11 +8,12 @@ This is a single-page React application with a built-in content management panel
 
 - Admin panel for non-technical officers, protected by Supabase Auth
 - Board roster organized by year, with the newest year shown by default
-- Scroll-driven cherry blossom hero rendered on a canvas, with a static fallback for reduced motion
-- Monthly events calendar, weekly events, and a live prayer times widget with a countdown
+- Cherry blossom hero with an optional, click-to-play scroll animation on a canvas (never auto-downloaded)
+- Monthly events calendar, weekly events, and today's prayer times on the home page with a live countdown
 - Photo carousels and a lightbox, with image uploads handled in the admin panel
 - Mailing list signup, search across all content, dark mode, and a mobile-first layout
-- Event-level Google Analytics tracking for page views, sections, clicks and signups
+- Event-level Google Analytics tracking plus Microsoft Clarity heatmaps, with a plain-language privacy statement
+- WCAG 2.2 AA accessibility work and an on-site accessibility statement
 
 ## Tech stack
 
@@ -25,7 +26,7 @@ This is a single-page React application with a built-in content management panel
 | Images | Cloudinary CDN, with Supabase Storage as a fallback |
 | Hosting | Firebase Hosting |
 | CI/CD | GitHub Actions |
-| Analytics | Google Analytics 4 |
+| Analytics | Google Analytics 4, Microsoft Clarity |
 
 There is no custom server. The browser talks to Supabase directly, and security is enforced with Row Level Security policies in the database.
 
@@ -39,6 +40,10 @@ All site content lives in one JSON object. On load, the app reads a single `site
 
 The app uses a small hash router (`/#/about`, `/#/events`, and so on). Hash routes work on any static host without server rewrites. Six pages are defined in a `PAGES` array, and each page lists the ordered sections it renders.
 
+### Loading strategy
+
+Public visitors download only what the public site needs. Site content is read with one `fetch` call (`src/contentApi.js`) and cached in `localStorage` for instant repeat visits. The admin dashboard (`src/admin/AdminPanel.jsx`), the Supabase client, the policy pages and the Quad tree are separate chunks loaded with `React.lazy` / `import()` only when they're used.
+
 ### Admin panel
 
 Officers sign in with Supabase Auth. The editor is split into tabs for each content type, including board, events, gallery, sponsors, merch, programs and mailing list. Edits are written to Supabase and recorded in an `admin_log` table for an audit trail. Free-text link fields pass through a `safeHref` helper that blocks unsafe URL schemes.
@@ -49,28 +54,37 @@ Uploads are resized in the browser to a maximum of 1600px and converted to WebP 
 
 ### Hero animation
 
-`src/components/CanvasHeroSequence.jsx` draws a 120 frame image sequence onto a single canvas, scrubbed by scroll position. It uses requestAnimationFrame throttling, a small preload pool, two resolution sets for phones and desktops, and a retina-aware canvas. With reduced motion enabled, it shows a single poster frame instead.
+`src/components/CanvasHeroSequence.jsx` shows a static poster with a "Play the bloom" button. Only when a visitor presses it does it download a 120 frame image sequence and draw it onto a single canvas, scrubbed by scroll position. It uses requestAnimationFrame throttling, a small preload pool, two resolution sets for phones and desktops, and a retina-aware canvas. With reduced motion enabled, only the poster is shown and no button is offered.
 
 ### Prayer times
 
-Prayer times come from an AthanPlus (Masjidal) widget. Browsers cannot fetch that feed directly because of CORS, so a scheduled GitHub Action runs `scripts/sync-prayer-times.mjs` once a day. It reads the day's times on the server and writes them into the Supabase content row, which the countdown uses.
+Prayer times come from an AthanPlus (Masjidal) widget. Browsers cannot fetch that feed directly because of CORS, so a scheduled GitHub Action runs `scripts/sync-prayer-times.mjs` once a day. It reads the day's times on the server and writes them into the Supabase content row. The nav countdown and the home page's "Today's prayer times" strip both read those values; the shared logic is in `src/prayerTimes.js`.
 
 ### Analytics
 
-`src/analytics.js` attaches one delegated click listener and sends GA4 events: `page_view`, `section_view`, `nav_click`, `button_click`, `link_click`, `social_click`, `outbound_click`, `merch_store_click`, `email_click`, `phone_click`, `photo_open` and `mailing_signup`. No personal data is collected, and tracking pauses while an officer is signed in.
+`src/analytics.js` attaches one delegated click listener and sends GA4 events: `page_view`, `section_view`, `nav_click`, `button_click`, `link_click`, `social_click`, `outbound_click`, `merch_store_click`, `email_click`, `phone_click`, `photo_open` and `mailing_signup`. No personal data is collected, and tracking pauses while an officer is signed in. `gtag.js` itself is loaded after the page is idle.
+
+Microsoft Clarity is loaded from the same file once the browser is idle. It is skipped entirely for visitors who send Global Privacy Control or Do Not Track, and the mailing-list form and admin dashboard carry `data-clarity-mask` so they're never recorded. Set `CLARITY_PROJECT_ID` in `src/analytics.js` to enable it.
+
+Everything above is described for visitors at `/#/privacy` (`src/components/PolicyPages.jsx`). If you add a tracker, embed or form field, update that page too.
 
 ## Project structure
 
 ```
 .
 ├── src/
-│   ├── App.jsx                     # pages, sections, seed content, admin panel
-│   ├── supabase.js                 # Supabase client, uploads, mailing list, audit log
-│   ├── analytics.js                # GA4 event tracking
+│   ├── App.jsx                     # pages, sections, seed content (file map at the top)
+│   ├── contentApi.js               # lightweight public content fetch + cache, lazy Supabase loader
+│   ├── supabase.js                 # Supabase client, uploads, mailing list, audit log (lazy)
+│   ├── prayerTimes.js              # prayer schedule, Seattle clock, shared countdown
+│   ├── analytics.js                # GA4 event tracking + Microsoft Clarity loader
 │   ├── QuadTree.jsx                # scroll-drawn cherry tree
 │   ├── main.jsx                    # entry point
+│   ├── admin/
+│   │   └── AdminPanel.jsx          # officer dashboard (lazy chunk)
 │   └── components/
-│       └── CanvasHeroSequence.jsx  # scroll-driven canvas hero
+│       ├── CanvasHeroSequence.jsx  # click-to-play scroll-driven canvas hero
+│       └── PolicyPages.jsx         # privacy + accessibility statements
 ├── scripts/
 │   └── sync-prayer-times.mjs       # daily prayer time sync
 ├── public/                         # hero frames, merch images, video, logos
@@ -101,7 +115,7 @@ The local site connects to the live Supabase project, so content and admin login
 
 **Cloudinary.** Set `CLOUDINARY_CLOUD_NAME` and `CLOUDINARY_UPLOAD_PRESET` at the top of `src/supabase.js`. The preset must be unsigned. Leave both blank to use Supabase Storage instead.
 
-**Analytics.** The measurement ID is set in `index.html`. Event parameters such as `section` and `link_text` need to be registered as custom dimensions in GA4 before they appear in reports.
+**Analytics.** The GA4 measurement ID is set in `index.html`. The Microsoft Clarity Project ID goes in `CLARITY_PROJECT_ID` at the top of `src/analytics.js` (blank = Clarity off). Event parameters such as `section` and `link_text` need to be registered as custom dimensions in GA4 before they appear in reports.
 
 ## Deployment
 
@@ -115,11 +129,17 @@ The daily prayer time workflow needs a second secret:
 
 ## Performance notes
 
-- Vendor code is split into separate cacheable chunks (React, anime.js, icons)
+- Vendor code is split into separate cacheable chunks (React, anime.js, icons); admin, supabase-js and policy pages are lazy chunks
+- The hero animation frames are only downloaded on request
+- Google Analytics and Clarity load after the page is idle
 - Images are lazy-loaded and compressed on upload
 - Static assets are served with long-lived immutable cache headers
 - The hero loads frames progressively and serves smaller frames to phones
 - Content is fetched in a single request
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). Add a line under "Unreleased" with every change.
 
 ## Maintaining the site
 
