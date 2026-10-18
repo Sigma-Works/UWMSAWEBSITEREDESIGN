@@ -15,8 +15,8 @@ rename **Unreleased** to the date and start a new empty **Unreleased** section.
 - **Microsoft Clarity** (heatmaps and anonymised session replays), loaded from
   `src/analytics.js`. It waits until the browser is idle, never loads for
   visitors who send Global Privacy Control or Do Not Track, and is masked over
-  the mailing-list form and the officer dashboard. Paste the Project ID into
-  `CLARITY_PROJECT_ID` to switch it on. Until then nothing loads.
+  the mailing-list form and the officer dashboard. Project ID `yzuco9qvpp`
+  is set in `CLARITY_PROJECT_ID` (set it to `""` to switch Clarity off).
 - **Privacy statement** at `/#/privacy`, written in plain language. It covers
   Google Analytics, Clarity, the mailing list, on-device settings, third-party
   services and officer accounts.
