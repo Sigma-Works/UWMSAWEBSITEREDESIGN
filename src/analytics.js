@@ -37,7 +37,7 @@
        mailing-list form are additionally wrapped in data-clarity-mask so
        nothing inside them is ever recorded.
    ─────────────────────────────────────────────────────────────────────── */
-export const CLARITY_PROJECT_ID = ""; // ← paste the Clarity Project ID here
+export const CLARITY_PROJECT_ID = "yzuco9qvpp"; // MSA UW project on clarity.microsoft.com ("" disables Clarity)
 
 /** True when the visitor's browser asks not to be tracked (GPC or DNT). */
 export function privacySignalOn() {
