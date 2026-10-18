@@ -1,11 +1,13 @@
+/* Full Supabase client: auth, writes, uploads, mailing list.
+   This module is loaded ON DEMAND (see loadSupabase() in contentApi.js and
+   the lazy admin chunk), so public visitors never download supabase-js.
+   The public read of site content lives in contentApi.js instead. */
 import { createClient } from "@supabase/supabase-js";
 
 // ── MSA UW Supabase project ─────────────────────────────────────────────
-// These two values are safe to keep in front-end code. The publishable key
-// is public by design; security is enforced by the Row Level Security (RLS)
-// policies on the database, not by hiding this key.
-const SUPABASE_URL = "https://rhngkfkvaecviwoezzvv.supabase.co";
-const SUPABASE_KEY = "sb_publishable_2YptlgjkaoMokG0rgRSEkQ_wq7y2iSc";
+// The URL and publishable key are defined once in contentApi.js (both are
+// public by design; RLS policies enforce security, not key secrecy).
+import { SUPABASE_URL, SUPABASE_KEY } from "./contentApi.js";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 

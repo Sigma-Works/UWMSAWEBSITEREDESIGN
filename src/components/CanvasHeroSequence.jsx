@@ -24,6 +24,12 @@
      the whole scroll stage collapses to a single static poster frame,
      no canvas loop, no tall spacer.
 
+   • CLICK-TO-LOAD: the sequence is ~14 MB of frames on desktop (~5 MB on
+     phones). Nothing beyond the single poster image is downloaded until the
+     visitor presses "Play the bloom". Until then the hero is a normal,
+     one-screen-tall static poster, so the home page is light and quick for
+     everyone, and nobody gets a large animation they didn't ask for.
+
    The component is self-contained: it renders its own pinned stage and
    calls back with scroll progress (0..1) so the parent can fade hero
    text in/out in step with the bloom.
@@ -103,6 +109,13 @@ export default function CanvasHeroSequence({
 
   const [ready, setReady] = useState(false);   // first frame painted
   const [loadPct, setLoadPct] = useState(0);   // preload progress 0..100
+  // Has the visitor opted in to the animation? false → static poster only,
+  // no frame downloads, no scroll listener, no rAF loop.
+  const [active, setActive] = useState(false);
+  // The hint ("Scroll to watch it bloom") is faded on scroll via this ref.
+  const hintRef = useRef(null);
+  // Off-screen status text for screen readers ("Loading…", "Ready…").
+  const [status, setStatus] = useState("");
 
   /* ── Canvas draw ─────────────────────────────────────────────────────
      Draws image `i` with object-fit: cover math into the backing store. */
@@ -202,12 +215,13 @@ export default function CanvasHeroSequence({
       const hint = ov.querySelector("[data-hero-hint]");
       if (hint) hint.style.opacity = String(Math.max(0, 1 - p * 3));
     }
+    if (hintRef.current) hintRef.current.style.opacity = String(Math.max(0, 1 - p * 3));
     onProgress?.(p);
   }, [onProgress, overlayRef]);
 
   /* ── Preload sequence (progressive, bounded concurrency) ─────────── */
   useEffect(() => {
-    if (reduced) return;                 // reduced-motion: no sequence load
+    if (reduced || !active) return;      // not opted in (or reduced motion): load nothing
     const size = pickSize();
     sizeRef.current = size;
     framesRef.current = new Array(FRAME_COUNT);
@@ -225,6 +239,7 @@ export default function CanvasHeroSequence({
           framesRef.current[i] = img;
           loaded++;
           setLoadPct(Math.round((loaded / totalToLoadRef.current) * 100));
+          if (loaded === totalToLoadRef.current) setStatus("Animation loaded. Scroll down to play it.");
           // first usable frame → reveal + kick the loop
           if (!ready && drawnRef.current < 0) {
             requestAnimationFrame(() => {
@@ -270,11 +285,11 @@ export default function CanvasHeroSequence({
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reduced]);
+  }, [reduced, active]);
 
   /* ── Wire up scroll + resize + rAF loop ──────────────────────────── */
   useEffect(() => {
-    if (reduced) return;
+    if (reduced || !active) return;
     resize();
     onScroll();
     rafRef.current = requestAnimationFrame(loop);
@@ -287,13 +302,28 @@ export default function CanvasHeroSequence({
       window.removeEventListener("resize", resize);
       window.removeEventListener("orientationchange", resize);
     };
-  }, [reduced, loop, onScroll, resize]);
+  }, [reduced, active, loop, onScroll, resize]);
 
-  /* ── Reduced-motion static fallback ──────────────────────────────── */
-  if (reduced) {
+  // The Play button unmounts once pressed, so move keyboard focus to the
+  // stage itself instead of letting it fall back to <body> (WCAG 2.4.3).
+  useEffect(() => {
+    if (active) stageRef.current?.focus({ preventScroll: true });
+  }, [active]);
+
+  // Start button handler: switch to the scroll stage and begin preloading.
+  const start = useCallback(() => {
+    setActive(true);
+    setStatus("Loading the cherry blossom animation…");
+  }, []);
+
+  /* ── Static poster (reduced motion, or the visitor hasn't pressed Play) ──
+     Exactly one viewport tall, a single image, no listeners. For
+     reduced-motion visitors there is no Play button at all. */
+  if (reduced || !active) {
     return (
       <section
-        className={className}
+        className={`hero-stage ${className}`}
+        aria-label="Welcome"
         style={{
           position: "relative",
           minHeight: "100svh",
@@ -303,17 +333,43 @@ export default function CanvasHeroSequence({
       >
         <img
           src={posterUrl()}
-          alt="Cherry blossoms in full bloom"
+          alt="Cherry blossoms in full bloom on the University of Washington Quad"
+          fetchpriority="high"
+          decoding="async"
           style={{
             position: "absolute", inset: 0, width: "100%", height: "100%",
             objectFit: "cover", zIndex: 0,
           }}
         />
-        <div style={{ position: "absolute", inset: 0, zIndex: 1,
+        <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 1,
           background: "linear-gradient(180deg, rgba(20,17,24,.55) 0%, rgba(20,17,24,.35) 45%, rgba(20,17,24,.72) 100%)" }} />
         <div style={{ position: "relative", zIndex: 2, minHeight: "100svh",
-          display: "grid", placeItems: "center" }}>
+          display: "grid", placeItems: "center", alignContent: "center", gap: 28, padding: "0 20px" }}>
           {children}
+          {!reduced && (
+            <button type="button" onClick={start} className="hero-play"
+              aria-describedby="hero-play-note"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 10,
+                padding: "12px 22px", borderRadius: 999, cursor: "pointer",
+                fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, color: "#fff",
+                background: "rgba(20,17,24,.45)",
+                border: "1px solid rgba(255,255,255,.45)",
+                backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
+              }}>
+              {/* Play triangle (decorative) */}
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M3 1.5v11l9.5-5.5z" fill="currentColor" />
+              </svg>
+              Play the bloom
+            </button>
+          )}
+          {!reduced && (
+            <span id="hero-play-note" style={{ fontSize: 12.5, color: "rgba(255,255,255,.78)",
+              marginTop: -16 }}>
+              Optional scroll animation · loads about {pickSize() === "sm" ? "5" : "14"} MB
+            </span>
+          )}
         </div>
       </section>
     );
@@ -323,13 +379,18 @@ export default function CanvasHeroSequence({
   return (
     <section
       ref={stageRef}
-      className={className}
+      className={`hero-stage ${className}`}
+      aria-label="Welcome"
+      tabIndex={-1}
       style={{
         position: "relative",
+        outline: "none",
         height: `${scrollHeightVh}vh`,   // the scroll range
         ...style,
       }}
     >
+      {/* Announces loading progress to screen readers (visually hidden). */}
+      <p className="sr-only" role="status" aria-live="polite">{status}</p>
       {/* Pinned viewport-height layer */}
       <div
         style={{
@@ -373,8 +434,13 @@ export default function CanvasHeroSequence({
 
         {/* Overlaid hero content (title, CTA…) provided by the parent */}
         <div style={{ position: "relative", zIndex: 3, height: "100svh",
-          display: "grid", placeItems: "center", padding: "0 20px" }}>
+          display: "grid", placeItems: "center", alignContent: "center", gap: 30, padding: "0 20px" }}>
           {children}
+          <div ref={hintRef} aria-hidden="true" style={{ fontSize: 12.5, letterSpacing: "1.5px",
+            textTransform: "uppercase", color: "rgba(255,255,255,.78)", textAlign: "center",
+            pointerEvents: "none" }}>
+            Scroll to watch it bloom
+          </div>
         </div>
 
         {/* Tiny load indicator until the sequence is mostly ready */}

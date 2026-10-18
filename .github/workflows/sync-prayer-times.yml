@@ -2,8 +2,10 @@ name: Sync prayer times
 
 # Runs server-side (GitHub's servers, not a visitor's browser), so CORS
 # never comes into play — it fetches the live AthanPlus feed directly and
-# writes today's times into Supabase, which is what the nav countdown
-# falls back to reading. 08:00 UTC is ~00:00-01:00 Pacific depending on
+# writes today's times into Supabase. This is the ONLY source of live
+# times for the site: the nav countdown and the home-page "Today's prayer
+# times" widget both read these values (browsers can't fetch the AthanPlus
+# feed directly because it sends no CORS headers). 08:00 UTC is ~00:00-01:00 Pacific depending on
 # daylight saving, i.e. shortly after the Pacific date rolls over and
 # safely before even the earliest Fajr of the year, so the countdown has
 # the correct day's times for the whole day.

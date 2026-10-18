@@ -19,6 +19,56 @@
    ignored while an officer is signed in so admin work doesn't skew numbers.
    ─────────────────────────────────────────────────────────────────────── */
 
+/* ── Microsoft Clarity (heatmaps + anonymised session replays) ────────────
+   Clarity shows WHERE people click, how far they scroll, and where they get
+   stuck, which GA4 event counts can't. Setup:
+     1. Create a project at https://clarity.microsoft.com (sign in with the
+        MSA account), add msauw.org.
+     2. Settings → Overview → copy the Project ID (looks like "abc123xyz9")
+        and paste it into CLARITY_PROJECT_ID below.
+   Leave it blank and Clarity is simply never loaded.
+
+   Privacy safeguards (all described on the site's /#/privacy page):
+     • Not loaded at all for visitors whose browser sends Global Privacy
+       Control or Do Not Track.
+     • Loaded only once the browser is idle, so it never competes with the
+       page's own first paint.
+     • Form inputs are masked by Clarity by default; the admin dashboard and
+       mailing-list form are additionally wrapped in data-clarity-mask so
+       nothing inside them is ever recorded.
+   ─────────────────────────────────────────────────────────────────────── */
+export const CLARITY_PROJECT_ID = ""; // ← paste the Clarity Project ID here
+
+/** True when the visitor's browser asks not to be tracked (GPC or DNT). */
+export function privacySignalOn() {
+  if (typeof navigator === "undefined") return false;
+  return navigator.globalPrivacyControl === true ||
+    navigator.doNotTrack === "1" || window.doNotTrack === "1";
+}
+
+let clarityStarted = false;
+export function initClarity() {
+  if (clarityStarted || !CLARITY_PROJECT_ID || typeof window === "undefined") return;
+  if (privacySignalOn()) return;   // respect the visitor's opt-out signal
+  clarityStarted = true;
+
+  const load = () => {
+    // Microsoft's official loader, unminified: defines a queueing stub
+    // (calls made before the script arrives are replayed), then injects
+    // the tag script asynchronously.
+    window.clarity = window.clarity || function (...args) {
+      (window.clarity.q = window.clarity.q || []).push(args);
+    };
+    const s = document.createElement("script");
+    s.async = true;
+    s.src = `https://www.clarity.ms/tag/${encodeURIComponent(CLARITY_PROJECT_ID)}`;
+    document.head.appendChild(s);
+  };
+  // Wait for an idle moment (max 4s) so analytics never delays first paint.
+  if ("requestIdleCallback" in window) window.requestIdleCallback(load, { timeout: 4000 });
+  else setTimeout(load, 2000);
+}
+
 let paused = false;
 export function setTrackingPaused(v) { paused = !!v; }
 

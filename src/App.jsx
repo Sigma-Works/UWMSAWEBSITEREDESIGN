@@ -1,13 +1,28 @@
 import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { createPortal } from "react-dom";
-import { supabase, loadContent, saveContent, uploadImage, deleteImage, pathFromUrl,
-  subscribe, listSubscribers, logAdminChange, listAdminLog } from "./supabase";
+// Public visitors only need one read (site content), done with plain fetch.
+// The full Supabase client is pulled in lazily via loadSupabase() for
+// officer login, saving, and mailing-list signups. See contentApi.js.
+import { loadContentPublic, hasStoredSession, loadSupabase,
+  readCachedContent, writeCachedContent } from "./contentApi.js";
+// Prayer-time maths (parsing, Seattle clock, next-prayer countdown) shared
+// by the nav pill and the home-page widget. See prayerTimes.js.
+import { PRAYER_ORDER, usePrayerCountdown, useTodaysPrayers } from "./prayerTimes.js";
 // Lazy — keeps anime.js out of the initial bundle. It only downloads when
 // a visitor actually scrolls near the Quad section.
 const QuadTree = React.lazy(() => import("./QuadTree.jsx"));
+// Lazy — the ~1,500-line officer dashboard (and supabase-js with it) is its
+// own chunk, downloaded only when someone opens the Admin panel.
+const AdminPanel = React.lazy(() => import("./admin/AdminPanel.jsx"));
 // Scroll-driven cherry-blossom canvas hero (270-frame sequence). Kept in its
 // own module so the frame-preload logic and canvas loop stay isolated.
-import { initAnalytics, track, trackPageView, observeSections, setTrackingPaused } from "./analytics.js";
+import { initAnalytics, initClarity, track, trackPageView, observeSections, setTrackingPaused } from "./analytics.js";
+// Lazy — the Privacy / Accessibility statements are plain text pages that
+// only a few visitors open, so they live in their own small chunk.
+const PrivacySection = React.lazy(() =>
+  import("./components/PolicyPages.jsx").then((m) => ({ default: m.PrivacySection })));
+const AccessibilitySection = React.lazy(() =>
+  import("./components/PolicyPages.jsx").then((m) => ({ default: m.AccessibilitySection })));
 import CanvasHeroSequence from "./components/CanvasHeroSequence.jsx";
 // Bold anime.js-driven hero: curtain intro, orchestrated headline reveal,
 // 3D cursor tilt on the medallion, magnetic CTAs. Self-contained — no
@@ -22,12 +37,40 @@ Instagram, Facebook, Link2,
   Settings, Camera, ArrowUp, ArrowDown, ShoppingBag
 } from "lucide-react";
 
-/* ============================================================
-   MSA UW — single-page site + in-session admin dashboard
-   Colors: UW Purple #4B2E83, Gold #B7A57A
-   Note: content edits persist for the browser session only
-   (artifacts can't use storage). Wire to a backend to persist.
-   ============================================================ */
+/* ════════════════════════════════════════════════════════════════════════
+   App.jsx: the whole public website (pages, sections, styling)
+
+   How the site fits together
+   ──────────────────────────
+   • Content: one JSON object. The built-in `seed` (below) is the fallback;
+     the live copy is fetched from Supabase on load (contentApi.js), cached
+     in localStorage for instant repeat visits, and merged over the seed by
+     mergeContent(). Officers edit it in the lazily loaded admin dashboard
+     (src/admin/AdminPanel.jsx).
+   • Routing: a tiny hash router (#/about, #/prayer, …). PAGES lists each
+     page and the ordered section ids it renders; PageRouter maps a section
+     id to its component.
+   • Styling: inline styles + one global <style> (StyleTag) holding theme
+     tokens (CSS variables for light/dark), keyframes and a11y utilities.
+
+   Map of this file (search for the name to jump there)
+   ────────────────────────────────────────────────────
+     Palette + safeHref ........ colour constants, link sanitiser
+     PAGES / NAV / routing ..... page list, hash router hook
+     Decorative SVG motifs ..... Star8, GirihBand, Arch, Rosette, …
+     Motion system ............. EASE, DUR, MotionPrefsContext, Reveal, …
+     seed ...................... default content for every section
+     App ....................... state, data loading, layout shell
+     StyleTag .................. global CSS
+     Nav / SettingsMenu ........ top bar, prayer pill, mobile menu
+     MasjidalPopup ............. prayer-times dialog
+     HomeSection ............... hero + announcements + HomePrayerTimes
+     …Section components ....... one per section id in PAGES
+     Footer .................... footer, policy links
+     shared styles + exports ... style objects re-used by the admin chunk
+
+   Brand colours: UW Purple #4B2E83, Gold #B7A57A (see palette below).
+   ════════════════════════════════════════════════════════════════════════ */
 
 // Palette derived from the MSA at UW logo (crescent + Seattle skyline):
 // near-black base, a purple→pink gradient, and gold accents.
@@ -100,12 +143,27 @@ const PAGES = [
   { route: "/events",    label: "Events",    sections: ["events", "stats", "programs"] },
   { route: "/community", label: "Community", sections: ["board", "instagram", "tiktok", "quad", "mailing"] },
   { route: "/merch",     label: "Merch",     sections: ["merch"] },
+  // Policy pages: reachable from the footer, `hidden` keeps them out of the
+  // main nav. `title` feeds the browser tab title (see PAGE_TITLE below).
+  { route: "/privacy",       label: "Privacy",       sections: ["privacy"], hidden: true },
+  { route: "/accessibility", label: "Accessibility", sections: ["accessibility"], hidden: true },
 ];
+
+// Browser-tab title per page. WCAG 2.4.2 ("Page Titled"): each "page" of
+// this single-page app gets its own descriptive title, so screen-reader
+// users and people with many tabs open can tell where they are.
+const SITE_NAME = "MSA UW";
+const PAGE_TITLE = (route) => {
+  const page = PAGES.find((p) => p.route === route);
+  return !page || page.route === "/"
+    ? "MSA UW — Muslim Student Association, University of Washington"
+    : `${page.label} · ${SITE_NAME}`;
+};
 
 // Top-level nav: the five pages, an external Merch link, and the Donate CTA
 // (Donate lives on /about but the CTA jumps straight to its section).
 const NAV = [
-  ...PAGES.map((p) => ({ route: p.route, label: p.label })),
+  ...PAGES.filter((p) => !p.hidden).map((p) => ({ route: p.route, label: p.label })),
   { route: "/about", section: "donate", label: "Donate", cta: true },
 ];
 
@@ -392,7 +450,12 @@ function useTheme() {
 // the site responds if the user changes it mid-session — combines the OS
 // setting with the visitor's manual in-site "Reduce motion" toggle.
 function useReducedMotion() {
-  const [osReduced, setOsReduced] = useState(false);
+  // Initialised synchronously from matchMedia (not `false`) so the very
+  // first render already knows; otherwise reduced-motion visitors briefly
+  // mounted every animation and then tore it all down a frame later.
+  const [osReduced, setOsReduced] = useState(() =>
+    typeof window !== "undefined" &&
+    !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
   useEffect(() => {
     const mq = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     if (!mq) return;
@@ -445,45 +508,45 @@ function useHeroScrollFX(rootRef, reduced) {
   }, [reduced, rootRef]);
 }
 
-// Measures the box that exactly encloses everything from the top of
-// `startRef` to the bottom of `endRef` (both relative to `sectionRef`),
-// plus the widest of `widthRefs` — used to size HeroArch so it always
-// wraps the rosary wheel and the CTA buttons regardless of viewport size,
-// font-loading reflow, or how long the headline text is, instead of
-// guessing fixed percentages. Re-measures on resize and shortly after
-// mount (fonts/images can still reflow content a beat after first paint).
-function useEnclosingBox(sectionRef, startRef, endRef, widthRefs, padding = 36) {
-  const [box, setBox] = useState(null);
+// Keyboard focus management for modal dialogs (WCAG 2.4.3 Focus Order,
+// 2.1.2 No Keyboard Trap). While `active`:
+//   • focus moves into the dialog (the element marked data-autofocus, else
+//     the first focusable element),
+//   • Tab / Shift+Tab wrap around inside the dialog instead of escaping to
+//     the page hidden behind it,
+//   • and when the dialog closes, focus returns to whatever opened it, so
+//     keyboard users don't get dumped back at the top of the page.
+// Escape handling stays in each dialog, since what "close" means differs.
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])';
+function useDialogFocus(active, containerRef) {
   useEffect(() => {
-    const measure = () => {
-      const section = sectionRef.current, start = startRef.current, end = endRef.current;
-      if (!section || !start || !end) return;
-      const sBox = section.getBoundingClientRect();
-      const aBox = start.getBoundingClientRect();
-      const bBox = end.getBoundingClientRect();
-      // Clamp to 0: the section has overflow:hidden, so a negative top
-      // (which happens whenever the rosette sits closer to the section's
-      // top edge than `padding`) used to push the arch's peak above the
-      // section's own boundary and get clipped off — "arch not fully
-      // visible" at the top. Clamping keeps the box fully inside the
-      // section while leaving `bottom` (and therefore where the arch's
-      // base lands) untouched.
-      const rawTop = aBox.top - sBox.top - padding;
-      const top = Math.max(rawTop, 0);
-      const bottom = bBox.bottom - sBox.top + padding;
-      let width = 0;
-      widthRefs.forEach((r) => {
-        if (r.current) width = Math.max(width, r.current.getBoundingClientRect().width);
-      });
-      setBox({ top, height: Math.max(0, bottom - top), width: width + padding * 2 });
+    if (!active) return;
+    const opener = document.activeElement;
+    // Wait one frame so the dialog's contents have mounted.
+    const raf = requestAnimationFrame(() => {
+      const root = containerRef.current;
+      if (!root || root.contains(document.activeElement)) return;
+      const target = root.querySelector("[data-autofocus]") || root.querySelector(FOCUSABLE);
+      target?.focus();
+    });
+    const onKey = (e) => {
+      if (e.key !== "Tab" || !containerRef.current) return;
+      const f = [...containerRef.current.querySelectorAll(FOCUSABLE)]
+        .filter((el) => el.offsetParent !== null || el === document.activeElement);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      else if (!containerRef.current.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
     };
-    measure();
-    window.addEventListener("resize", measure, { passive: true });
-    const t = setTimeout(measure, 350);
-    return () => { window.removeEventListener("resize", measure); clearTimeout(t); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sectionRef, startRef, endRef, padding]);
-  return box;
+    document.addEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("keydown", onKey);
+      if (opener && typeof opener.focus === "function" && document.contains(opener)) opener.focus();
+    };
+  }, [active, containerRef]);
 }
 
 // Fires once when the element scrolls into view.
@@ -1495,7 +1558,15 @@ function mergeContent(base, saved) {
 
 export default function App() {
   const reducedMotion = useReducedMotion();
-  const [data, setData] = useState(seed);
+  // Start from the cached copy of the content (if this browser has visited
+  // before), else the built-in seed. The fresh copy replaces it on load.
+  const [data, setData] = useState(() => {
+    const cached = readCachedContent();
+    return cached ? mergeContent(seed, cached) : seed;
+  });
+  // True when the first render already shows real (cached) content rather
+  // than the seed. Used to avoid a layout jump in the announcement bar.
+  const [startedFromCache] = useState(() => readCachedContent() != null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [active, setActive] = useState("home");
   // Current page (hash route). Section components are grouped onto pages
@@ -1509,7 +1580,9 @@ export default function App() {
   const [curtainDone, setCurtainDone] = useState(false);
 
   // Analytics: one global click listener + page/section view events.
-  useEffect(() => { initAnalytics(); }, []);
+  useEffect(() => { initAnalytics(); initClarity(); }, []);
+  // Keep the browser tab title in step with the current page.
+  useEffect(() => { document.title = PAGE_TITLE(route); }, [route]);
   useEffect(() => { setTrackingPaused(isAdmin || adminOpen); }, [isAdmin, adminOpen]);
   useEffect(() => {
     trackPageView(route);
@@ -1620,6 +1693,11 @@ export default function App() {
   // can't consume its own context — combine its one direct use (RippleField)
   // with the local motionOff state by hand instead.
   const effectiveReduced = reducedMotion || motionOff;
+  // Mirror the setting onto <html data-motion> so pure-CSS loops (shine
+  // sweep, lantern pulse, grain…) stop too, not just JS animations.
+  useEffect(() => {
+    document.documentElement.dataset.motion = effectiveReduced ? "off" : "on";
+  }, [effectiveReduced]);
 
   // On load: pull saved content from Supabase (fall back to seed if empty),
   // and check whether an admin session is already active.
@@ -1632,36 +1710,60 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const remote = await loadContent();
-        if (!cancelled && remote) setData(mergeContent(seed, remote));
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!cancelled) setIsAdmin(!!session);
+        // Plain fetch, no supabase-js needed (see contentApi.js).
+        const remote = await loadContentPublic();
+        if (!cancelled && remote) {
+          setData(mergeContent(seed, remote));
+          writeCachedContent(remote);     // instant, jump-free next visit
+        }
       } catch (err) {
-        console.warn("Content/session load failed — continuing with seed content.", err);
+        console.warn("Content load failed — continuing with seed content.", err);
       } finally {
         if (!cancelled) setLoaded(true);
       }
     })();
-    // keep isAdmin in sync if the session changes (login/logout/expiry)
-    let sub;
-    try {
-      sub = supabase.auth.onAuthStateChange((_e, session) => {
-        setIsAdmin(!!session);
-      }).data;
-    } catch (err) {
-      console.warn("Auth state listener failed to attach.", err);
-    }
-    return () => { cancelled = true; sub?.subscription?.unsubscribe(); };
+    return () => { cancelled = true; };
   }, []);
+
+  // Officer session tracking. Only loads the Supabase auth client when it is
+  // actually relevant: either this browser already holds a saved session, or
+  // someone has opened the Admin panel. Everyone else never downloads it.
+  useEffect(() => {
+    if (!adminOpen && !hasStoredSession()) return;
+    let cancelled = false;
+    let sub;
+    loadSupabase().then(async ({ supabase }) => {
+      if (cancelled) return;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!cancelled) setIsAdmin(!!session);
+        // keep isAdmin in sync if the session changes (login/logout/expiry)
+        sub = supabase.auth.onAuthStateChange((_e, s) => setIsAdmin(!!s)).data;
+      } catch (err) {
+        console.warn("Auth session check failed.", err);
+      }
+    }).catch((err) => console.warn("Could not load the Supabase client.", err));
+    return () => { cancelled = true; sub?.subscription?.unsubscribe(); };
+  }, [adminOpen]);
 
   // Persist the whole content object to Supabase. Used by the admin panel's
   // Save button. Requires an authenticated session (enforced by RLS).
   const persist = useCallback(async (next) => {
+    // Never save while the page may still be showing the localStorage cache:
+    // saving stale cached content could overwrite newer edits in Supabase.
+    if (!loaded) {
+      return { ok: false, error: "Still loading the latest content. Please try again in a moment." };
+    }
     setSaving(true);
-    const res = await saveContent(next);
-    setSaving(false);
-    return res;
-  }, []);
+    try {
+      const { saveContent } = await loadSupabase();
+      return await saveContent(next);
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    } finally {
+      setSaving(false);
+    }
+  }, [loaded]);
 
   // Navigate to a section, crossing pages when needed. Accepts a bare
   // section id ("events"), a page route ("/about"), or "/about#donate".
@@ -1731,10 +1833,17 @@ export default function App() {
       style={{ fontFamily: "'Poppins', system-ui, sans-serif",
         color: "var(--text)", background: "var(--bg)", minHeight: "100vh" }}>
       <StyleTag />
+      {/* WCAG 2.4.1 "Bypass Blocks": the first Tab stop on every page jumps
+          keyboard users straight past the nav to the page content. It is
+          visually hidden until focused (see .skip-link in StyleTag). */}
+      <a href="#main-content" className="skip-link" onClick={(e) => {
+        e.preventDefault();               // hash links would change the route
+        document.getElementById("main-content")?.focus();
+      }}>Skip to main content</a>
       <RippleField reduced={effectiveReduced || rippleOff} />
       <HeroCurtain progress={loadProgress} onDone={() => setCurtainDone(true)} />
       {petals && <SakuraWind dark={dark} />}
-      <AnnouncementBar bar={data.bar} onNav={scrollTo} />
+      <AnnouncementBar bar={data.bar} onNav={scrollTo} ready={loaded || startedFromCache} />
       {/* Nav highlights by page ROUTE ("/", "/about", …), not by the
           scroll-spy section id — `active` holds section ids (e.g. "home",
           "prayer") which never match a NAV item's `route`, so the old
@@ -1749,18 +1858,26 @@ export default function App() {
            onSearch={() => setSearchOpen(true)} />
       <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)}
         data={data} onNav={scrollTo} />
-      <main>
+      {/* tabIndex -1 lets the skip link move focus here programmatically. */}
+      <main id="main-content" tabIndex={-1} style={{ outline: "none" }}>
         <PageRouter route={route} data={data} onNav={scrollTo}
           curtainDone={curtainDone} reduced={effectiveReduced} />
       </main>
       <Footer onAdmin={() => setAdminOpen(true)} data={data} onNav={scrollTo} />
+      {/* Admin dashboard is a lazy chunk (see the import at the top).
+          data-clarity-mask hides everything inside it from Microsoft
+          Clarity session recordings, so officer work is never captured. */}
       {adminOpen && (
-        <AdminPanel
-          data={data} setData={setData}
-          isAdmin={isAdmin} setIsAdmin={setIsAdmin}
-          persist={persist} saving={saving}
-          onClose={() => setAdminOpen(false)}
-        />
+        <div data-clarity-mask="true">
+          <React.Suspense fallback={null}>
+            <AdminPanel
+              data={data} setData={setData}
+              isAdmin={isAdmin} setIsAdmin={setIsAdmin}
+              persist={persist} saving={saving}
+              onClose={() => setAdminOpen(false)}
+            />
+          </React.Suspense>
+        </div>
       )}
     </div>
     </MotionPrefsContext.Provider>
@@ -1797,6 +1914,8 @@ function PageRouter({ route, data, onNav, curtainDone, reduced }) {
       case "quad":          return <QuadSection key="quad" data={data} />;
       case "mailing":       return <MailingList key="mailing" data={data} />;
       case "merch":         return <MerchSection key="merch" data={data} onNav={onNav} />;
+      case "privacy":       return <React.Suspense key="privacy" fallback={null}><PrivacySection /></React.Suspense>;
+      case "accessibility": return <React.Suspense key="accessibility" fallback={null}><AccessibilitySection /></React.Suspense>;
       default:              return null;
     }
   };
@@ -1807,7 +1926,10 @@ function PageRouter({ route, data, onNav, curtainDone, reduced }) {
 function StyleTag() {
   return (
     <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap');
+      /* Fonts (Poppins + Amiri) are loaded from index.html with preconnect,
+         so the browser starts fetching them before this JS even runs. They
+         used to be an @import here, which could only start downloading after
+         React had rendered this <style> tag: a late, render-blocking chain. */
       * { box-sizing: border-box; }
       html { scroll-behavior: smooth; }
       body { margin: 0; }
@@ -1825,7 +1947,7 @@ function StyleTag() {
         --text: #2c2640;
         --text-muted: #5a5468;
         --text-soft: #4a4458;
-        --text-faint: #8a8498;
+        --text-faint: #6b6578;   /* ≈5.4:1 on --bg (was #8a8498 ≈3.4:1, below WCAG AA) */
         --border: rgba(75,46,131,.10);
         --border-strong: rgba(0,0,0,.15);
         --card-shadow: 0 4px 20px rgba(75,46,131,.06);
@@ -1839,6 +1961,7 @@ function StyleTag() {
         --accent-strong: #4a3175;
         --nav-active-bg: rgba(75,46,131,.09);
         --nav-idle: #4a4458;
+        --error: #b03a2e;        /* ≈5.6:1 on white */
       }
       [data-theme="dark"] {
         --bg: #120e1a;
@@ -1862,6 +1985,7 @@ function StyleTag() {
         --accent-strong: #e6d7b0;
         --nav-active-bg: rgba(201,182,136,.16);
         --nav-idle: #c3b8db;
+        --error: #ff8a7a;        /* light coral, ≈7:1 on the dark surface */
       }
       /* Theme swap eases rather than snapping. */
       body, #root, [data-theme] {
@@ -1878,6 +2002,15 @@ function StyleTag() {
           scroll-behavior: auto !important;
         }
       }
+
+      /* Same, for visitors who flip "Reduce motion" in the site's Settings
+         without changing their OS preference (App sets data-motion). */
+      [data-motion="off"] *, [data-motion="off"] *::before, [data-motion="off"] *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+      }
+      [data-motion="off"] { scroll-behavior: auto; }
 
       /* ── Hero entrance ──────────────────────────────────────────────── */
       .reveal { opacity: 0; transform: translate3d(0,26px,0);
@@ -2090,9 +2223,35 @@ function StyleTag() {
       .xfade { transition: opacity 780ms ${EASE.outSoft},
                            transform 1500ms ${EASE.outSoft}; }
 
-      a:focus-visible, button:focus-visible {
-        outline: 3px solid ${GOLD}; outline-offset: 3px; border-radius: 6px;
+      /* Visible keyboard focus on EVERY interactive element (WCAG 2.4.7),
+         not just links and buttons. Uses the accent token so it reads on
+         both themes; the gold ring stays on dark hero/footer surfaces. */
+      a:focus-visible, button:focus-visible, input:focus-visible,
+      select:focus-visible, textarea:focus-visible, summary:focus-visible,
+      [tabindex]:not([tabindex="-1"]):focus-visible, [role="switch"]:focus-visible {
+        outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 6px;
       }
+      footer a:focus-visible, footer button:focus-visible,
+      #home a:focus-visible, #home button:focus-visible,
+      .hero-stage a:focus-visible, .hero-stage button:focus-visible {
+        outline-color: ${GOLD};
+      }
+
+      /* Hidden visually but still read by screen readers. */
+      .sr-only {
+        position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+      }
+
+      /* "Skip to main content": off-screen until it receives keyboard focus. */
+      .skip-link {
+        position: fixed; left: 12px; top: 12px; z-index: 1000;
+        padding: 12px 18px; border-radius: 10px; font-weight: 700; font-size: 15px;
+        background: var(--surface); color: var(--accent); text-decoration: none;
+        box-shadow: 0 10px 30px rgba(0,0,0,.25);
+        transform: translateY(-160%); transition: transform 160ms ease-out;
+      }
+      .skip-link:focus { transform: translateY(0); }
     `}</style>
   );
 }
@@ -2105,15 +2264,40 @@ function StyleTag() {
    carousel spin), plus two finer switches for the rosary wheel's neon glow
    and the hover ripple specifically, for anyone who wants most motion but
    not those two. Choices persist across visits via MotionPrefsContext. */
+/* One labelled on/off switch row in the Settings popover. Defined at module
+ scope (not inside SettingsMenu) so React keeps the same element across
+ re-renders. Keyboard focus stays on the switch after toggling it. */
+const ToggleRow = ({ label, hint, checked, onToggle }) => (
+  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 14, padding: "9px 2px" }}>
+    <div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text)" }}>{label}</div>
+      {hint && <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 1, lineHeight: 1.4 }}>{hint}</div>}
+    </div>
+    <button type="button" role="switch" aria-checked={checked} aria-label={label}
+      onClick={() => onToggle(!checked)}
+      style={{ flex: "0 0 auto", width: 38, height: 22, borderRadius: 999, position: "relative",
+        border: "none", cursor: "pointer", padding: 0,
+        background: checked ? GOLD : "var(--border-strong)",
+        transition: `background ${DUR.fast}ms ${EASE.out}` }}>
+      <span aria-hidden="true" style={{ position: "absolute", top: 2, left: checked ? 18 : 2,
+        width: 18, height: 18, borderRadius: "50%", background: "#fff",
+        boxShadow: "0 1px 3px rgba(0,0,0,.3)", transition: `left ${DUR.fast}ms ${EASE.out}` }} />
+    </button>
+  </div>
+);
+
 function SettingsMenu({ dark, onToggleDark, petals, onTogglePetals }) {
   const { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff } = useMotionPrefs();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
+  const btnRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    // Escape closes the popover and puts focus back on the gear button.
+    const onKey = (e) => { if (e.key === "Escape") { setOpen(false); btnRef.current?.focus(); } };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -2122,34 +2306,17 @@ function SettingsMenu({ dark, onToggleDark, petals, onTogglePetals }) {
     };
   }, [open]);
 
-  const ToggleRow = ({ label, hint, checked, onToggle }) => (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-      gap: 14, padding: "9px 2px" }}>
-      <div>
-        <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text)" }}>{label}</div>
-        {hint && <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 1, lineHeight: 1.4 }}>{hint}</div>}
-      </div>
-      <button type="button" role="switch" aria-checked={checked} aria-label={label}
-        onClick={() => onToggle(!checked)}
-        style={{ flex: "0 0 auto", width: 38, height: 22, borderRadius: 999, position: "relative",
-          border: "none", cursor: "pointer", padding: 0,
-          background: checked ? GOLD : "var(--border-strong)",
-          transition: `background ${DUR.fast}ms ${EASE.out}` }}>
-        <span aria-hidden="true" style={{ position: "absolute", top: 2, left: checked ? 18 : 2,
-          width: 18, height: 18, borderRadius: "50%", background: "#fff",
-          boxShadow: "0 1px 3px rgba(0,0,0,.3)", transition: `left ${DUR.fast}ms ${EASE.out}` }} />
-      </button>
-    </div>
-  );
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
-      <button className="btn" onClick={() => setOpen((o) => !o)} aria-label="Display settings"
-        aria-expanded={open} aria-haspopup="true" title="Display settings" style={iconBtn}>
+      <button ref={btnRef} className="btn" onClick={() => setOpen((o) => !o)} aria-label="Display settings"
+        aria-expanded={open} title="Display settings" style={iconBtn}>
         <Settings size={16} color="var(--accent)" />
       </button>
       {open && (
-        <div role="menu" style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, width: 268,
+        // A labelled group of switches, not role="menu": ARIA menus must
+        // contain menuitems and arrow-key handling, which this doesn't need.
+        <div role="group" aria-label="Display settings" style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, width: 268,
           background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14,
           boxShadow: "0 18px 40px rgba(0,0,0,.24)", padding: "8px 14px", zIndex: 60 }}>
           <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "1.2px", textTransform: "uppercase",
@@ -2174,178 +2341,24 @@ function SettingsMenu({ dark, onToggleDark, petals, onTogglePetals }) {
   );
 }
 
-/* "Next prayer in HH:MM:SS" pill for the nav bar. Parses the manual prayer
-   times (Fajr…Isha), figures out the next one, and counts down — one timer,
-   updated once a second, cleared on unmount. Clicking it opens a popup with
-   the live Masjidal widget (or a link-out if no Masjid ID is set). Renders
-   nothing if there are no usable times. */
-const PRAYER_ORDER = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+/* "Next prayer in HH:MM:SS" pill for the nav bar. The schedule maths and
+   the shared once-a-second clock live in src/prayerTimes.js. Clicking the
+   pill opens a popup with the live Masjidal widget (or the manual times). */
 
-function parsePrayerToMinutes(str) {
-  // "5:42 AM" -> minutes since midnight; returns null if unparseable
-  const m = String(str || "").trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
-  if (!m) return null;
-  let h = parseInt(m[1], 10); const min = parseInt(m[2], 10);
-  const ap = (m[3] || "").toUpperCase();
-  if (ap === "PM" && h !== 12) h += 12;
-  if (ap === "AM" && h === 12) h = 0;
-  if (h > 23 || min > 59) return null;
-  return h * 60 + min;
-}
-
-// MSA is in Seattle, and every prayer time on the site is a Seattle local
-// time — but `new Date().getHours()` reads the VISITOR's device clock,
-// which is only correct by coincidence. A visitor whose laptop/phone is
-// set to a different timezone (traveling, a device that hasn't picked up
-// the local zone, a browser override, etc.) got a countdown computed
-// against the wrong "now" entirely — sometimes off by hours, which is the
-// "wrong countdown" this fixes. Reading the wall-clock time via an
-// explicit America/Los_Angeles Intl formatter (rather than a fixed UTC
-// offset) also means it stays correct across the PST/PDT daylight-saving
-// switch automatically.
-function getSeattleNowMinutes(date) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).formatToParts(date);
-  const get = (type) => Number(parts.find((p) => p.type === type)?.value || 0);
-  // Midnight in the 24h format above can come back as "24" instead of "00"
-  // in some engines — normalize so it doesn't throw the minute count off
-  // by a full day.
-  const hour = get("hour") % 24;
-  return hour * 60 + get("minute") + get("second") / 60;
-}
-
-// Pulls today's actual "STARTS" times straight out of the same live
-// AthanPlus widget the popup already embeds, so the nav countdown tracks
-// reality instead of manually-entered fields that drift out of date
-// (prayer times shift a few minutes every day). Deliberately tag-strips
-// rather than parsing specific HTML structure — Masjidal/AthanPlus don't
-// publish a documented API or markup contract for this widget, so
-// anchoring on the visible "Fajr ... 3:46 AM" text is more likely to
-// survive a styling change on their end than matching specific classes
-// would be.
-//
-// The page lists a full week, one block per day, but there's no need to
-// isolate "today's" block: today's is always first in document order, so
-// a plain (non-global) match against the whole page already lands on
-// today's occurrence of each prayer name — String.match() returns the
-// first hit. An earlier version tried to find where today's block "ends"
-// by locating the *second* occurrence of the heading text "PRAYER
-// TIMINGS" and slicing everything before it, which breaks in practice
-// because the page's own <title> tag ("Masjidal - Prayer timings") also
-// contains that phrase — throwing the occurrence count off by one and
-// slicing away the real table data instead of the days after it.
-// Matching directly against the full text sidesteps that fragility.
-function parseAthanPlusTimes(html) {
-  const text = String(html)
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const out = {};
-  for (const name of PRAYER_ORDER) {
-    // e.g. "Fajr 3:46 AM 4:30 AM" — the first time is the start (adhan);
-    // the second (bold, "Iqamah") isn't what the countdown should track.
-    const m = text.match(new RegExp(`\\b${name}\\b\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)`, "i"));
-    if (m) out[name] = m[1].toUpperCase();
-  }
-  return out;
-}
-
-// Fetched at most once an hour (prayer times don't change faster than
-// that) and only when a masjidalId is actually configured, matching the
-// existing "live widget vs. manual times" gating everywhere else on the
-// site. Any failure — CORS not permitted from this origin, the endpoint
-// being down, the page's markup no longer matching — is swallowed and
-// simply leaves liveTimes empty, so callers fall back to the manual
-// fields instead of breaking the countdown entirely.
-function useLiveMasjidalTimes(masjidId) {
-  const [liveTimes, setLiveTimes] = useState(null);
-
-  useEffect(() => {
-    const id = (masjidId || "").trim();
-    if (!id) { setLiveTimes(null); return; }
-    let cancelled = false;
-    const load = async () => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      try {
-        const url = `https://timing.athanplus.com/masjid/widgets/embed?theme=3&masjid_id=${encodeURIComponent(id)}&color=000000`;
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) throw new Error(`bad response: ${res.status}`);
-        const html = await res.text();
-        const parsed = parseAthanPlusTimes(html);
-        if (!cancelled && Object.keys(parsed).length > 0) setLiveTimes(parsed);
-      } catch {
-        // CORS block, network hiccup, unexpected markup, etc. — stay
-        // silent and let the manual-times fallback handle it.
-      } finally {
-        clearTimeout(timeout);
-      }
-    };
-    load();
-    const hourly = setInterval(load, 60 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(hourly); };
-  }, [masjidId]);
-
-  return liveTimes;
-}
-
-// All the "figure out what's next and how long until it" logic, lifted
-// out of the pill component itself so Nav can call this ONCE and render
-// the pill twice (desktop bar + mobile bar) off the same computed state.
-// Two separately-mounted NextPrayerTimers used to mean two independent
-// tickers and two independent attempts at the live AthanPlus fetch —
-// harmless individually, but pointless duplication for something that's
-// identical either way, and content the "run smoothly, minimal memory"
-// standard this whole rebuild has been held to.
-function usePrayerCountdown(times) {
-  const [now, setNow] = useState(() => new Date());
-  const liveTimes = useLiveMasjidalTimes(times?.masjidalId);
-  // Live-fetched values win when present; anything the fetch didn't
-  // cover (or couldn't get at all) falls back to the manual fields.
-  const effectiveTimes = React.useMemo(() => ({ ...times, ...liveTimes }), [times, liveTimes]);
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Build today's prayer schedule in minutes, sorted chronologically —
-  // memoized on the merged times object. The sort is defensive: PRAYER_ORDER's
-  // names are already in time order, but an admin typo (e.g. an AM/PM
-  // slip on one prayer) shouldn't be able to make the "next prayer" search
-  // below skip over an earlier time just because it appears later in the
-  // array.
-  const schedule = React.useMemo(() => {
-    if (!effectiveTimes) return [];
-    return PRAYER_ORDER
-      .map((name) => ({ name, mins: parsePrayerToMinutes(effectiveTimes[name]) }))
-      .filter((p) => p.mins != null)
-      .sort((a, b) => a.mins - b.mins);
-  }, [effectiveTimes]);
-
-  if (schedule.length === 0) return null;
-
-  const nowMins = getSeattleNowMinutes(now);
-  let next = schedule.find((p) => p.mins > nowMins);
-  let crossesMidnight = false;
-  if (!next) { next = schedule[0]; crossesMidnight = true; } // wrap to tomorrow's Fajr
-
-  // seconds until next prayer
-  let diffMin = next.mins - nowMins;
-  if (crossesMidnight) diffMin += 24 * 60;
-  const totalSec = Math.max(0, Math.round(diffMin * 60));
-  const hh = Math.floor(totalSec / 3600);
-  const mm = Math.floor((totalSec % 3600) / 60);
-  const ss = totalSec % 60;
-  const pad = (n) => String(n).padStart(2, "0");
-  const countdown = hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
-
-  return { next, countdown };
+// Self-contained countdown pill: subscribes to the shared clock itself, so
+// only this small component re-renders every second. Both the desktop and
+// mobile copies share the same single interval (see prayerTimes.js).
+// Renders nothing when there are no usable prayer times.
+function NavPrayerPill({ times, compact, onClick, wrapClassName, wrapStyle }) {
+  const countdown = usePrayerCountdown(times);
+  if (!countdown) return null;
+  const pill = (
+    <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
+      compact={compact} onClick={onClick} />
+  );
+  return wrapClassName || wrapStyle
+    ? <div className={wrapClassName} style={wrapStyle}>{pill}</div>
+    : pill;
 }
 
 // Pure presentational pill — no fetching or ticking of its own, just
@@ -2353,14 +2366,18 @@ function usePrayerCountdown(times) {
 // once (desktop bar, mobile bar) since it's just a button.
 function PrayerCountdownPill({ next, countdown, compact = false, onClick }) {
   return (
-    <button onClick={onClick} title="Prayer times"
-      aria-label={`Next prayer ${next.name} in ${countdown}`}
+    // No aria-label: the accessible name is built from the visible text plus
+    // the sr-only prefix, so it always CONTAINS what sighted users see
+    // (WCAG 2.5.3 "Label in Name"; matters for voice-control users who say
+    // "click Asr in…").
+    <button onClick={onClick} title="Open today's prayer times"
       style={{ display: "inline-flex", alignItems: "center", gap: 7,
         padding: compact ? "7px 12px" : "8px 14px", borderRadius: 999,
         border: "1px solid var(--border)", background: "var(--tint)",
         cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
         color: "var(--text)", fontSize: compact ? 12.5 : 13, fontWeight: 600 }}>
-      <Clock size={compact ? 13 : 14} color="var(--accent)" />
+      <Clock size={compact ? 13 : 14} color="var(--accent)" aria-hidden="true" />
+      <span className="sr-only">Next prayer: </span>
       <span style={{ color: "var(--text-muted)" }}>{next.name} in</span>
       <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700, color: "var(--accent)" }}>
         {countdown}
@@ -2371,6 +2388,11 @@ function PrayerCountdownPill({ next, countdown, compact = false, onClick }) {
 
 /* Popup showing the live Masjidal prayer-times widget. */
 function MasjidalPopup({ times, onClose }) {
+  // Dialog focus management (WCAG 2.4.3): move focus into the dialog when
+  // it opens, keep Tab inside it while open, and hand focus back to
+  // whatever opened it (the countdown pill) when it closes.
+  const cardRef = useRef(null);
+  useDialogFocus(true, cardRef);   // focus in, Tab trap, focus back on close
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -2438,7 +2460,7 @@ function MasjidalPopup({ times, onClose }) {
         // the card itself (below) gets the same centering while degrading
         // to plain top alignment — no clipping — once it doesn't fit.
         overflowY: "auto", overscrollBehavior: "contain" }}>
-      <div className="masjidal-card" onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
+      <div ref={cardRef} className="masjidal-card" onClick={(e) => e.stopPropagation()} style={{ ...card, width: "min(440px, 96vw)",
         display: "flex", flexDirection: "column", flexShrink: 0, margin: "auto 0",
         overflow: "hidden", position: "relative", padding: 0 }}>
         <style>{`
@@ -2460,7 +2482,7 @@ function MasjidalPopup({ times, onClose }) {
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
             <Clock size={17} color="var(--accent)" /> Prayer Times
           </div>
-          <button onClick={onClose} aria-label="Close" style={{ ...iconBtn, width: 34, height: 34 }}>
+          <button data-autofocus onClick={onClose} aria-label="Close prayer times" style={{ ...iconBtn, width: 34, height: 34 }}>
             <X size={17} color="var(--accent)" />
           </button>
         </div>
@@ -2520,12 +2542,13 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
   petals, onTogglePetals, onSearch, prayerTimes }) {
   const { motionOff, setMotionOff, glowOff, setGlowOff, rippleOff, setRippleOff } = useMotionPrefs();
   const [solid, setSolid] = useState(false);
-  const [progress, setProgress] = useState(0);
+  // Reading-progress bar under the nav. Updated via a ref (no React state),
+  // so scrolling doesn't re-render the whole nav ~60 times a second.
+  const progressRef = useRef(null);
   const [openMenu, setOpenMenu] = useState(null);  // which dropdown is open
   const navRef = useRef(null);
-  // Computed once here (not per-pill) so the desktop and mobile countdown
-  // pills below share one ticker/fetch instead of each running their own.
-  const countdown = usePrayerCountdown(prayerTimes);
+  // The countdown itself lives in <NavPrayerPill> (below) rather than here,
+  // so the once-a-second tick re-renders only the pill, not the whole nav.
   const [prayerOpen, setPrayerOpen] = useState(false);
 
   useEffect(() => {
@@ -2534,7 +2557,12 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
       const y = window.scrollY;
       setSolid(y > 24);
       const max = document.documentElement.scrollHeight - window.innerHeight;
-      setProgress(max > 0 ? Math.min(y / max, 1) : 0);
+      const progress = max > 0 ? Math.min(y / max, 1) : 0;
+      const bar = progressRef.current;
+      if (bar) {
+        bar.style.transform = `scaleX(${progress})`;
+        bar.style.opacity = progress > 0.005 ? "1" : "0";
+      }
       ticking = false;
     };
     const onScroll = () => { if (ticking) return; ticking = true; raf = requestAnimationFrame(read); };
@@ -2561,13 +2589,22 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
     };
   }, [openMenu]);
 
-  // Lock body scroll while the mobile sheet is open.
+  // Lock body scroll while the mobile sheet is open, and let Escape close it
+  // (returning focus to the hamburger button).
+  const menuBtnRef = useRef(null);
   useEffect(() => {
     if (!menuOpen) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, [menuOpen]);
+    const onKey = (e) => {
+      if (e.key === "Escape") { setMenuOpen(false); menuBtnRef.current?.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen, setMenuOpen]);
 
   // active is the current route ("/", "/about", …). A nav item is active
   // when its route matches (the Donate CTA never highlights).
@@ -2590,14 +2627,14 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
       boxShadow: solid ? "var(--card-shadow)" : "0 0 0 rgba(0,0,0,0)",
       transition: `background ${DUR.base}ms ${EASE.out}, box-shadow ${DUR.base}ms ${EASE.out}, border-color ${DUR.base}ms ${EASE.out}, backdrop-filter ${DUR.base}ms ${EASE.out}`,
     }}>
-      <div aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, bottom: -1,
+      <div ref={progressRef} aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, bottom: -1,
         height: 2, transformOrigin: "0 50%",
-        transform: `scaleX(${progress})`,
+        transform: "scaleX(0)",
         background: `linear-gradient(90deg, ${VIOLET}, ${GOLD})`,
-        opacity: progress > 0.005 ? 1 : 0,
+        opacity: 0,
         transition: `opacity ${DUR.base}ms ${EASE.out}` }} />
 
-      <nav style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px", position: "relative",
+      <nav aria-label="Main" style={{ maxWidth: 1200, margin: "0 auto", padding: "12px 20px", position: "relative",
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <button className="btn logomark" onClick={() => onNav("/")} aria-label="MSA at UW — home"
           style={{ display: "flex", alignItems: "center", gap: 10, background: "none",
@@ -2621,13 +2658,9 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             space-between to land it in the middle — that'd only be
             approximately centered, and its exact position would depend on
             the logo and hamburger button happening to be the same width. */}
-        {countdown && (
-          <div className="mob" style={{ display: "none", position: "absolute",
-            left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}>
-            <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
-              compact onClick={() => setPrayerOpen(true)} />
-          </div>
-        )}
+        <NavPrayerPill times={prayerTimes} compact onClick={() => setPrayerOpen(true)}
+          wrapClassName="mob" wrapStyle={{ display: "none", position: "absolute",
+            left: "50%", top: "50%", transform: "translate(-50%, -50%)" }} />
 
         {/* ── Desktop ─────────────────────────────────────────────────── */}
         <div className="desk" style={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -2661,10 +2694,7 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
             );
           })}
 
-          {countdown && (
-            <PrayerCountdownPill next={countdown.next} countdown={countdown.countdown}
-              onClick={() => setPrayerOpen(true)} />
-          )}
+          <NavPrayerPill times={prayerTimes} onClick={() => setPrayerOpen(true)} />
           <button className="btn" onClick={onSearch} aria-label="Search the site"
             title="Search (⌘K)" style={iconBtn}>
             <Search size={16} color="var(--accent)" />
@@ -2678,8 +2708,9 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         </div>
 
         {/* ── Mobile trigger ──────────────────────────────────────────── */}
-        <button className="mob" onClick={() => setMenuOpen(!menuOpen)}
+        <button ref={menuBtnRef} className="mob" onClick={() => setMenuOpen(!menuOpen)}
           aria-label={menuOpen ? "Close menu" : "Open menu"} aria-expanded={menuOpen}
+          aria-controls="mobile-menu"
           style={{ display: "none", background: "none", border: "none", cursor: "pointer",
             padding: 6 }}>
           {menuOpen ? <X size={26} color="var(--accent)" /> : <Menu size={26} color="var(--accent)" />}
@@ -2710,9 +2741,12 @@ function Nav({ active, onNav, menuOpen, setMenuOpen, onAdmin, dark, onToggleDark
         opacity: menuOpen ? 1 : 0,
         transform: menuOpen ? "translate3d(0,0,0)" : "translate3d(0,-8px,0)",
         pointerEvents: menuOpen ? "auto" : "none",
-        transition: `opacity ${DUR.base}ms ${EASE.out}, transform ${DUR.base}ms ${EASE.out}`,
+        // visibility (delayed on close so the fade can finish) removes the
+        // closed sheet from the Tab order and the accessibility tree.
+        visibility: menuOpen ? "visible" : "hidden",
+        transition: `opacity ${DUR.base}ms ${EASE.out}, transform ${DUR.base}ms ${EASE.out}, visibility 0s linear ${menuOpen ? 0 : DUR.base}ms`,
         zIndex: 49,
-      }}>
+      }} id="mobile-menu" aria-hidden={!menuOpen} inert={menuOpen ? undefined : ""}>
         <div style={{ padding: "10px 20px calc(28px + env(safe-area-inset-bottom, 0px))" }}>
           {NAV.map((item, i) => {
             if (item.external) {
@@ -3012,41 +3046,6 @@ function HeroCurtain({ progress = 0, onDone }) {
   );
 }
 
-/* ── 3D cursor tilt ──────────────────────────────────────────────────────
-   Wraps a child in a perspective container that tilts toward the cursor
-   (±8°) — the "premium, modern" depth cue used across Linear/Vercel/Stripe.
-   Smoothed with anime.js rather than snapping straight to the pointer. */
-function TiltWrap({ children, max = 8, style }) {
-  const outerRef = useRef(null);
-  const innerRef = useRef(null);
-  const reduced = useReducedMotion();
-
-  useEffect(() => {
-    if (reduced) return;
-    const el = outerRef.current, inner = innerRef.current;
-    if (!el || !inner) return;
-    const onMove = (e) => {
-      const r = el.getBoundingClientRect();
-      const px = (e.clientX - r.left) / r.width - 0.5;
-      const py = (e.clientY - r.top) / r.height - 0.5;
-      animate(inner, {
-        rotateY: px * max * 2, rotateX: -py * max * 2,
-        duration: 700, ease: "outQuad",
-      });
-    };
-    const onLeave = () => animate(inner, { rotateX: 0, rotateY: 0, duration: 900, ease: "outQuad" });
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerleave", onLeave);
-    return () => { el.removeEventListener("pointermove", onMove); el.removeEventListener("pointerleave", onLeave); };
-  }, [reduced, max]);
-
-  return (
-    <div ref={outerRef} style={{ perspective: 900, ...style }}>
-      <div ref={innerRef} style={{ transformStyle: "preserve-3d" }}>{children}</div>
-    </div>
-  );
-}
-
 /* ── Magnetic button ─────────────────────────────────────────────────────
    Nudges toward the cursor within its own bounds (up to ~10px) and pops
    slightly on hover — a small, deliberate bit of "this was crafted" feel
@@ -3208,68 +3207,47 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
   const stageRef = useRef(null);
   const glowARef = useRef(null);
   const glowBRef = useRef(null);
-  const rosetteWrapRef = useRef(null);
-  // Used to be the CTA buttons (Get Involved / Learn More) — those moved to
-  // the New Here section, so the arch's lower boundary is now the
-  // announcement cards instead.
-  const announceRef = useRef(null);
-  const archWidthRefs = useRef([rosetteWrapRef, announceRef]).current;
-  // Sorted announcements — pinned first — rendered where the old
-  // headline/subtitle/CTA used to sit. Same data + sort the standalone
-  // Announcements section used to use, before that section was folded into
-  // this hero backdrop (the arch + spinning rosary now *is* the
-  // announcement section, rather than a separate block further down).
+  // Sorted announcements — pinned first.
   const sortedAnnouncements = React.useMemo(() => {
     const items = data.announcements || [];
     return [...items].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
   }, [data.announcements]);
 
-  // Drives --fx-angle/--fx-mix on the section for the logo glow + arch glow.
+  // Drives --fx-mix on the section for the logo's neon glow colour shift.
   useHeroScrollFX(sectionRef, reduced);
 
-  // Sizes the arch so it actually encloses the rosette wheel down through
-  // the announcement cards, measured from the real rendered layout rather
-  // than guessed percentages.
-  // Padding bumped up a bit (38 → 56) to give the arch some extra
-  // breathing room around what it encloses, now that the logo sits higher
-  // up inside it.
-  const archBox = useEnclosingBox(sectionRef, rosetteWrapRef, announceRef, archWidthRefs, 56);
-
-  // Fluid-reveal entrance — logo mark scales/fades in, then
-  // kicker/headline/subtitle/CTA. Fires once the curtain hands off (or
-  // immediately, statically, for reduced-motion visitors) — same gating
-  // as before.
+  // Entrance: logo mark scales/fades in, then the announcement heading,
+  // cards and the prayer-times strip. Fires once the loading curtain hands
+  // off (or immediately and statically for reduced-motion visitors).
   useEffect(() => {
     const stage = stageRef.current;
-    // .hero-logo-mark now lives outside stageRef (it's absolutely
-    // positioned against the section so it can be pinned to the rosary
-    // wheel's center) — so queries for it are scoped to the whole section.
-    const section = sectionRef.current;
-    if (!stage || !section) return;
+    if (!stage) return;
+    const parts = ".hero-logo-mark,.hero-ann-head,.hero-ann-cards,.hero-prayer";
     if (reduced) {
-      utils.set(section.querySelectorAll(
-        ".hero-ann-head,.hero-ann-cards,.hero-logo-mark"
-      ), { opacity: 1, translateY: 0, scale: 1, filter: "blur(0px)" });
+      utils.set(stage.querySelectorAll(parts),
+        { opacity: 1, translateY: 0, scale: 1, filter: "blur(0px)" });
       return;
     }
     if (!curtainDone) return;
 
     const tl = createTimeline({ defaults: { ease: "outExpo" } });
-    tl.add(section.querySelector(".hero-logo-mark"), {
-        opacity: [0, 1], scale: [0.85, 1], duration: 950, ease: "outExpo",
+    tl.add(stage.querySelector(".hero-logo-mark"), {
+        opacity: [0, 1], scale: [0.9, 1], duration: 900,
       }, 0)
       .add(stage.querySelector(".hero-ann-head"), {
         opacity: [0, 1], translateY: [24, 0], filter: ["blur(6px)", "blur(0px)"], duration: 650,
-      }, "-=250")
+      }, "-=300")
       .add(stage.querySelector(".hero-ann-cards"), {
         opacity: [0, 1], translateY: [22, 0], duration: 600,
-      }, "-=200");
+      }, "-=250")
+      .add(stage.querySelector(".hero-prayer"), {
+        opacity: [0, 1], translateY: [18, 0], duration: 600,
+      }, "-=300");
 
     return () => tl?.revert?.();
   }, [curtainDone, reduced]);
 
-  // Bold ambient light — bigger, more saturated blooms drifting behind the
-  // hero, still slow, still nothing that snaps.
+  // Ambient light: two big, soft colour blooms drifting very slowly.
   useEffect(() => {
     if (reduced) return;
     const a = animate(glowARef.current, {
@@ -3283,10 +3261,10 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
 
   return (
     <>
-      {/* ── Scroll-driven cherry-blossom hero ──────────────────────────────
-          Apple-style: a pinned canvas scrubs a 270-frame bloom sequence as
-          the visitor scrolls, then hands off to the branded home hero below.
-          Collapses to a single static poster under reduced-motion. */}
+      {/* ── Cherry-blossom hero ───────────────────────────────────────────
+          Shows a static poster by default. The scroll-scrubbed 120-frame
+          bloom only downloads if the visitor presses "Play the bloom"
+          (see CanvasHeroSequence.jsx). Never offered under reduced motion. */}
       <CanvasHeroSequence reduced={reduced} overlayRef={heroOverlayRef} scrollHeightVh={190}>
         <div ref={heroOverlayRef} style={{ textAlign: "center", maxWidth: 820,
           // The fade/translate is written straight to this node by
@@ -3300,14 +3278,13 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             border: "1px solid rgba(201,182,136,.45)", marginBottom: 22 }}>
             <PetalIcon size={15} color={GOLD} />
             <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: ".6px",
-              textTransform: "uppercase", color: "rgba(255,255,255,.85)" }}>
+              textTransform: "uppercase", color: "rgba(255,255,255,.9)" }}>
               {data.hero.kicker ?? seed.hero.kicker}
             </span>
           </div>
-          {/* Shiny sweep on the main headline too, not just the eyebrow
-              labels — white base so it still reads bright at rest, with
-              the same purple highlight passing through it on a loop.
-              Falls back to plain white for reduced-motion visitors. */}
+          {/* The page's single <h1> (WCAG 1.3.1 / 2.4.6: one top-level
+              heading per page). Shiny sweep falls back to plain white for
+              reduced-motion visitors. */}
           <h1 className={reduced ? "" : "shiny-text"}
             style={{ margin: 0, color: reduced ? "#fff" : undefined, fontWeight: 800,
             fontSize: "clamp(34px,6vw,68px)", lineHeight: 1.05,
@@ -3315,184 +3292,99 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
             filter: "drop-shadow(0 2px 30px rgba(0,0,0,.4))" }}>
             {data.hero.title ?? seed.hero.title}
           </h1>
-          <p style={{ marginTop: 20, color: "rgba(255,255,255,.86)",
+          <p style={{ marginTop: 20, color: "rgba(255,255,255,.9)",
             fontSize: "clamp(15px,2vw,20px)", lineHeight: 1.6, maxWidth: 620,
             marginLeft: "auto", marginRight: "auto" }}>
             {data.hero.mission}
           </p>
-          {!reduced && (
-            <div data-hero-hint style={{ marginTop: 34, opacity: 1,
-              fontSize: 12.5, letterSpacing: "1.5px", textTransform: "uppercase",
-              color: "rgba(255,255,255,.6)" }}>
-              Scroll to watch it bloom
-            </div>
-          )}
         </div>
       </CanvasHeroSequence>
 
-      <section id="home" ref={sectionRef} className="grain vignette" style={{ position: "relative", overflow: "hidden",
+      {/* ── Announcements + today's prayers ───────────────────────────────
+          Deliberately simple: logo, heading, announcement cards and the
+          prayer strip in one centred column over the deep purple gradient.
+          (The mihrab arch outline and the large spinning rosary wheel that
+          used to frame this area were removed for a cleaner, less crowded
+          look.) */}
+      <section id="home" ref={sectionRef} aria-labelledby="home-announcements-title"
+        className="grain vignette" style={{ position: "relative", overflow: "hidden",
         background: GRAD_DEEP,
-        color: "#fff", padding: "104px 20px 0" }}>
+        color: "#fff", padding: "88px 20px 0" }}>
         <AmbientGlow />
         <PatternField />
-        {/* bold gold + violet light blooms — bigger and more saturated than
-            a purely "subtle" ambient layer, still drifting almost imperceptibly */}
         <div aria-hidden="true" ref={glowARef} style={{ position: "absolute", top: "4%", left: "8%",
           width: 540, height: 540, borderRadius: "50%", filter: "blur(100px)", pointerEvents: "none", zIndex: 0,
-          background: `radial-gradient(circle, rgba(201,182,136,.4) 0%, transparent 70%)` }} />
+          background: `radial-gradient(circle, rgba(201,182,136,.32) 0%, transparent 70%)` }} />
         <div aria-hidden="true" ref={glowBRef} style={{ position: "absolute", bottom: "0%", right: "4%",
           width: 480, height: 480, borderRadius: "50%", filter: "blur(90px)", pointerEvents: "none", zIndex: 0,
-          background: `radial-gradient(circle, rgba(140,120,180,.42) 0%, transparent 70%)` }} />
+          background: `radial-gradient(circle, rgba(140,120,180,.36) 0%, transparent 70%)` }} />
         <HangingLanterns />
-        {/* large rosary-wheel medallion — spins as the page scrolls, tilts
-            slightly in 3D toward the cursor, centered directly behind the
-            logo/arch. Wrapped in a plain measured div (rosetteWrapRef) so
-            HeroArch below can size itself to actually enclose it.
-            The wheel used to be a flat 560px regardless of viewport — on
-            phones (much narrower than 560px) the section's overflow:hidden
-            clipped its left/right edges into two straight vertical lines,
-            so what should read as a circle came across as a squared-off
-            shape. Sizing it with clamp() instead keeps it a true circle at
-            every width, just a smaller one on small screens — and as a
-            bonus, the arch below (which measures this wrapper's real
-            width) now hugs it correctly on mobile too instead of sizing
-            itself for the old fixed 560px. */}
-        {/* top uses max(140px, 5%) instead of a bare 5% — on a shorter
-            section (fewer announcements) 5% alone could land at well
-            under 56px (the padding useEnclosingBox pads the arch's box
-            by), pushing the arch's measured top negative and clipping its
-            peak against this section's own overflow:hidden edge, and
-            visually reading as if it bled into the cherry-blossom hero
-            above. The 140px floor guarantees real breathing room under
-            the sticky nav no matter how short the section is. */}
-        <div ref={rosetteWrapRef} style={{ position: "absolute", top: "max(140px, 5%)", left: "50%",
-          width: "clamp(230px, 52vw, 560px)", height: "clamp(230px, 52vw, 560px)",
-          marginLeft: "calc(clamp(230px, 52vw, 560px) / -2)",
-          pointerEvents: "none", zIndex: 0 }}>
-          <TiltWrap max={9}>
-            <ScrollSpin speed={14}>
-              <Rosette points={16} skip={7} color={GOLD}
-                opacity={0.15} strokeWidth={1}
-                style={{ width: "clamp(230px, 52vw, 560px)", height: "clamp(230px, 52vw, 560px)" }} />
-            </ScrollSpin>
-          </TiltWrap>
-        </div>
-        {/* central mihrab arch silhouette — strokes draw themselves in,
-            framing the logo, sized to enclose the rosette + CTA buttons */}
-        <HeroArch box={archBox} />
-
-        {/* ── Logo mark — pulled out of normal flow and pinned above the
-            rosary wheel's own center (rosette center is top:5% + half its
-            560px size = 5%+280px; the logo sits higher than that, at
-            5%+152px, so it reads as tucked up near the top of the arch's
-            opening rather than dead-center on the wheel — while still
-            leaving a comfortable gap from the arch's peak itself).
-            A radiating neon purple/gold glow sits behind it, its angle
-            driven by useHeroScrollFX (see --fx-angle/--fx-mix on the
-            section), so the light visibly shifts position as you scroll —
-            like catching the mark at a different angle.
-            NOTE: the centering transform and the entrance scale/opacity
-            animation (added to .hero-logo-mark by anime.js below) must live
-            on separate elements — same reason as TiltWrap — otherwise the
-            animation's own `transform` write would knock the mark off its
-            centered position. ── */}
-        <div style={{ position: "absolute", left: "50%", top: "calc(max(140px, 5%) + 152px)",
-          transform: "translate(-50%, -50%)", zIndex: 2, pointerEvents: "none" }}>
-          <div className="hero-logo-mark" style={{
-            position: "relative", opacity: 0,
-            width: "clamp(230px, 34vw, 340px)", height: "clamp(230px, 34vw, 340px)",
-            display: "grid", placeItems: "center",
-          }}>
-            {/* glow layer — a blurred conic gradient rotating with scroll,
-                so purple/gold trade places around the mark as you scroll.
-                Skipped entirely when the "Rosary glow" display setting is
-                off (Nav's settings menu / MotionPrefsContext). */}
-            {/* glow layer — a soft CIRCULAR radial glow emanating from the
-                logo. Uses a radial-gradient that fades to transparent at the
-                edge, so it reads as a round halo (no square corners the old
-                blurred conic-gradient produced). The color shifts between
-                neon purple/gold with scroll via --fx-mix. Skipped entirely
-                when the "Rosary glow" display setting is off. */}
-            {!glowOff && (
-              <>
-                <div aria-hidden="true" style={{
-                  position: "absolute", inset: "-28%", borderRadius: "50%",
-                  background: `radial-gradient(circle at center, color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)) 0%, transparent 62%)`,
-                  filter: "blur(30px)", opacity: 0.7, mixBlendMode: "screen",
-                }} />
-                <div aria-hidden="true" style={{
-                  position: "absolute", inset: "-8%", borderRadius: "50%",
-                  background: `radial-gradient(circle at center, color-mix(in srgb, ${NEON_GOLD} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_PURPLE} calc(var(--fx-mix, .5) * 100%)) 0%, transparent 58%)`,
-                  filter: "blur(18px)", opacity: 0.5, mixBlendMode: "screen",
-                }} />
-              </>
-            )}
-            <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
-              decoding="async"
-              style={{ position: "relative", width: "82%", height: "82%", objectFit: "contain",
-                filter: glowOff
-                  ? "drop-shadow(0 8px 26px rgba(0,0,0,.4))"
-                  : `drop-shadow(0 8px 26px rgba(0,0,0,.4)) drop-shadow(0 0 22px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))` }} />
-          </div>
-        </div>
 
         <div ref={stageRef} style={{ maxWidth: 960, margin: "0 auto", position: "relative", zIndex: 2,
-          textAlign: "center", paddingBottom: 24 }}>
+          textAlign: "center", paddingBottom: 8 }}>
 
-          {/* Spacer — the logo above is absolutely positioned (so it can be
-              pinned to the rosary wheel's center), so this holds open the
-              vertical space it used to occupy in normal flow, keeping the
-              kicker/headline below from jumping up. */}
-          <div aria-hidden="true" style={{ height: "clamp(300px, 38vw, 400px)" }} />
+          {/* ── Logo mark, now in normal document flow (it used to be
+              absolutely pinned to the centre of the rosary wheel). The
+              optional neon glow sits behind it; its colour drifts between
+              purple and gold via --fx-mix from useHeroScrollFX. Skipped
+              entirely when the "Rosary glow" display setting is off. */}
+          <div className="hero-logo-mark" style={{
+            // Sized by width only; the logo PNG is portrait (686×1004), so
+            // its height follows from the real aspect ratio below.
+            position: "relative", opacity: 0, margin: "0 auto 28px",
+            width: "clamp(112px, 15vw, 150px)",
+          }}>
+            {!glowOff && (
+              <div aria-hidden="true" style={{
+                position: "absolute", inset: "-22%", borderRadius: "50%",
+                background: `radial-gradient(circle at center, color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)) 0%, transparent 62%)`,
+                filter: "blur(28px)", opacity: 0.55, mixBlendMode: "screen",
+              }} />
+            )}
+            <img src={`${import.meta.env.BASE_URL}logo-mark.png`} alt="MSA at UW logo"
+              width="686" height="1004" decoding="async" loading="lazy"
+              style={{ position: "relative", display: "block", width: "100%", height: "auto",
+                filter: "drop-shadow(0 8px 26px rgba(0,0,0,.4))" }} />
+          </div>
 
-          {/* ── This used to be the headline/subtitle/CTA. Per the plan
-              (arch + spinning rosary backdrop becomes the announcements
-              section, standalone Announcements section below removed): the
-              backdrop — glow, rosette wheel, arch, logo — stays exactly as
-              it was; what sits inside it is now the announcement header +
-              cards instead of the old marketing headline. Get Involved /
-              Learn More moved down to the New Here section. ── */}
           <div className="hero-ann-head" style={{ opacity: 0 }}>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 8,
               padding: "7px 16px", borderRadius: 999, background: "rgba(201,182,136,.18)",
               border: "1px solid rgba(201,182,136,.45)", marginBottom: 18 }}>
               <Star8 size={14} color={GOLD} />
               <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "1.2px",
-                textTransform: "uppercase", color: "rgba(255,255,255,.85)" }}>
+                textTransform: "uppercase", color: "rgba(255,255,255,.9)" }}>
                 {data.sections?.announcements?.eyebrow ?? seed.sections.announcements.eyebrow}
               </span>
             </div>
-            <h1 style={{ margin: "0 0 14px", fontSize: "clamp(34px,5.4vw,58px)", fontWeight: 800,
-              lineHeight: 1.05, letterSpacing: "-1.8px" }}>
+            {/* h2, not h1: the hero title above is the page's one <h1>. */}
+            <h2 id="home-announcements-title" style={{ margin: "0 0 14px", fontSize: "clamp(32px,5vw,52px)",
+              fontWeight: 800, lineHeight: 1.05, letterSpacing: "-1.5px" }}>
               {data.sections?.announcements?.title ?? seed.sections.announcements.title}
-            </h1>
+            </h2>
             {(data.sections?.announcements?.body ?? seed.sections.announcements.body) && (
-              <p style={{ maxWidth: 560, margin: "0 auto", color: "rgba(255,255,255,.8)",
+              <p style={{ maxWidth: 560, margin: "0 auto", color: "rgba(255,255,255,.85)",
                 fontSize: "clamp(15px,1.8vw,17px)", lineHeight: 1.65 }}>
                 {data.sections?.announcements?.body ?? seed.sections.announcements.body}
               </p>
             )}
           </div>
 
-          {/* When there's nothing to show, this renders empty (zero height)
-              rather than a placeholder card — a dark, semi-transparent
-              "nothing new" box sitting on the already-dark hero backdrop
-              read as a stray black box, and it was the whole reason for
-              extra empty space here when no announcements were set. The
-              ref stays on the wrapper either way so the arch above still
-              has something to measure and size itself against. */}
-          <div ref={announceRef} className="hero-ann-cards"
+          {/* Renders empty (zero height) when there are no announcements,
+              rather than a "nothing new" placeholder box. */}
+          <div className="hero-ann-cards"
             style={{ opacity: 0, marginTop: sortedAnnouncements.length ? 32 : 0, textAlign: "left" }}>
             {sortedAnnouncements.length > 0 && (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
-                gap: 14 }}>
+              <ul role="list" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))",
+                gap: 14, listStyle: "none", margin: 0, padding: 0 }}>
                 {sortedAnnouncements.map((a) => {
                   const kind = ANN_KINDS[a.kind] || ANN_KINDS.notice;
                   const Wrapper = a.href ? "a" : "div";
                   const wrapProps = a.href
                     ? { href: safeHref(a.href), target: "_blank", rel: "noopener noreferrer" } : {};
                   return (
-                    <Wrapper key={a.id} {...wrapProps} className="lift" style={{
+                    <li key={a.id}>
+                    <Wrapper {...wrapProps} className="lift" style={{
                       display: "block", padding: 0, overflow: "hidden", height: "100%",
                       textDecoration: "none", position: "relative", borderRadius: 16,
                       background: "rgba(255,255,255,.06)", border: "1px solid rgba(201,182,136,.28)" }}>
@@ -3505,41 +3397,46 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
                             textTransform: "uppercase", color: kind.color }}>{kind.label}</span>
                           {a.pinned && (
                             <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".6px",
-                              textTransform: "uppercase", color: "rgba(255,255,255,.6)",
-                              border: "1px solid rgba(255,255,255,.25)", borderRadius: 99,
+                              textTransform: "uppercase", color: "rgba(255,255,255,.75)",
+                              border: "1px solid rgba(255,255,255,.3)", borderRadius: 99,
                               padding: "2px 8px" }}>Pinned</span>
                           )}
                           {a.date && (
                             <span style={{ marginLeft: "auto", fontSize: 12.5,
-                              color: "rgba(255,255,255,.55)" }}>{a.date}</span>
+                              color: "rgba(255,255,255,.72)" }}>{a.date}</span>
                           )}
                         </div>
                         <h3 style={{ margin: "0 0 6px", fontSize: 16.5, fontWeight: 700,
                           color: "#fff" }}>{a.title}</h3>
                         {a.body && (
-                          <div style={{ color: "rgba(255,255,255,.75)", fontSize: 14, lineHeight: 1.55 }}>
+                          <div style={{ color: "rgba(255,255,255,.82)", fontSize: 14, lineHeight: 1.55 }}>
                             <Markdown text={a.body} style={{ margin: "0 0 6px" }} />
                           </div>
                         )}
                         {a.href && (
                           <div style={{ marginTop: 8, color: GOLD, fontSize: 12.5,
                             fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 5 }}>
-                            Read more <ExternalLink size={12} />
+                            Read more <ExternalLink size={12} aria-hidden="true" />
+                            <span className="sr-only">(opens in a new tab)</span>
                           </div>
                         )}
                       </div>
                     </Wrapper>
+                    </li>
                   );
                 })}
-              </div>
+              </ul>
             )}
           </div>
+
+          {/* Today's five prayers with a live "next prayer" countdown. It
+              replaces the old plain "Prayer times" button in this spot. */}
+          <HomePrayerTimes times={data.prayerTimes || seed.prayerTimes}
+            onMore={() => onNav("/prayer")} />
         </div>
 
-        {/* Home quick-actions: a prominent Donate call-to-action plus a fast
-            jump to prayer times. Sits right under the announcements, above
-            the scroll cue. */}
-        <div style={{ position: "relative", zIndex: 2, maxWidth: 720, margin: "8px auto 0",
+        {/* Home quick action: a prominent Donate call-to-action. */}
+        <div style={{ position: "relative", zIndex: 2, maxWidth: 720, margin: "26px auto 0",
           display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center" }}>
           <button onClick={() => onNav("/about#donate")} className="lift"
             style={{ display: "inline-flex", alignItems: "center", gap: 9,
@@ -3547,33 +3444,19 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
               fontFamily: "inherit", fontSize: 15.5, fontWeight: 800, color: "#2c2418",
               background: `linear-gradient(120deg, ${GOLD}, #e0cf9f)`,
               boxShadow: "0 10px 30px rgba(201,182,136,.4)" }}>
-            <Heart size={17} /> Donate to MSA UW
-          </button>
-          <button onClick={() => onNav("/prayer")} className="lift"
-            style={{ display: "inline-flex", alignItems: "center", gap: 9,
-              padding: "14px 24px", borderRadius: 14, cursor: "pointer", fontFamily: "inherit",
-              fontSize: 15, fontWeight: 700, color: "#fff",
-              background: "rgba(255,255,255,.10)", border: "1px solid rgba(255,255,255,.28)" }}>
-            <Clock size={16} /> Prayer times
+            <Heart size={17} aria-hidden="true" /> Donate to MSA UW
           </button>
         </div>
         {/* Small hint: where to change site settings. */}
         <div style={{ position: "relative", zIndex: 2, textAlign: "center", marginTop: 14,
-          fontSize: 12.5, color: "rgba(255,255,255,.55)", lineHeight: 1.5, padding: "0 20px" }}>
+          fontSize: 12.5, color: "rgba(255,255,255,.72)", lineHeight: 1.5, padding: "0 20px" }}>
           Petals, animations, and light/dark mode can be changed in{" "}
-          <span style={{ color: "rgba(255,255,255,.8)", fontWeight: 600 }}>Settings</span>{" "}
+          <span style={{ color: "rgba(255,255,255,.9)", fontWeight: 600 }}>Settings</span>{" "}
           (the ⚙ icon in the top bar).
         </div>
 
         <ScrollCue onClick={() => onNav("moments")} />
-        {/* girih band along the base of the hero — marginTop gives it
-            extra clearance so it doesn't visually collide with the arch's
-            base line. The arch is absolutely positioned (it doesn't push
-            this flow content down on its own) and extends `padding` (56px)
-            below the announcement cards, while the cards' wrapper only has
-            24px of paddingBottom — without this gap the arch's bottom edge
-            ran a good ~30px into the band below it. */}
-        <div style={{ position: "relative", marginTop: 56 }}>
+        <div style={{ position: "relative", marginTop: 40 }}>
           <GirihBand color="rgba(183,165,122,.45)" height={54} opacity={1} unit={54} />
         </div>
         <style>{`
@@ -3583,6 +3466,113 @@ function HomeSection({ data, onNav, curtainDone, reduced: reducedProp }) {
         `}</style>
       </section>
     </>
+  );
+}
+
+/* ── Home page "Today's prayers" strip ───────────────────────────────────
+   Five compact tiles (Fajr → Isha) on the dark home backdrop. The next
+   prayer is highlighted in gold with a live countdown; prayers that have
+   already passed are dimmed. Times come from the site content, which the
+   daily GitHub Action keeps in sync with the Masjidal feed (see
+   src/prayerTimes.js), so this needs no network request of its own.
+
+   Accessibility:
+   • An ordered list (<ol>), with aria-current="time" on the next prayer.
+   • The ticking countdown is aria-hidden; screen readers instead get a
+     calm, non-changing sentence ("Next prayer: Asr at 4:50 PM"), so nothing
+     is re-announced every second.
+   • Colour is never the only cue: the next tile also says "Next".
+
+   Performance: only this component re-renders every second (via the shared
+   clock in prayerTimes.js), never the whole home section. */
+function HomePrayerTimes({ times, onMore }) {
+  const today = useTodaysPrayers(times);
+  if (!today) return null;               // no usable times → render nothing
+  const { prayers, next, countdown, tomorrow } = today;
+
+  return (
+    <div className="hero-prayer" style={{ opacity: 0, marginTop: 34 }}>
+      <div style={{ margin: "0 auto", maxWidth: 760, textAlign: "left",
+        borderRadius: 18, padding: "16px 16px 14px",
+        background: "rgba(20,17,24,.38)", border: "1px solid rgba(201,182,136,.28)",
+        backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 10, flexWrap: "wrap", padding: "0 4px 12px" }}>
+          <h3 id="home-prayer-title" style={{ margin: 0, fontSize: 15, fontWeight: 700,
+            display: "inline-flex", alignItems: "center", gap: 8, color: "#fff" }}>
+            <Clock size={16} color={GOLD} aria-hidden="true" />
+            Today's prayer times
+            <span style={{ fontWeight: 500, fontSize: 12.5, color: "rgba(255,255,255,.72)" }}>
+              · Seattle
+            </span>
+          </h3>
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,.85)" }}>
+            <span aria-hidden="true">
+              {next.name}{tomorrow ? " (tomorrow)" : ""} in{" "}
+              <strong style={{ color: GOLD, fontVariantNumeric: "tabular-nums" }}>{countdown}</strong>
+            </span>
+            <span className="sr-only">
+              Next prayer: {next.name}{tomorrow ? " tomorrow" : ""} at {next.time}.
+            </span>
+          </span>
+        </div>
+
+        <ol aria-labelledby="home-prayer-title" className="home-prayer-grid"
+          style={{ listStyle: "none", margin: 0, padding: 0, display: "grid",
+            gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 }}>
+          {prayers.map((p) => {
+            const isNext = p.status === "next";
+            const isPast = p.status === "past" && !isNext;
+            return (
+              <li key={p.name} aria-current={isNext ? "time" : undefined}
+                style={{ borderRadius: 12, padding: "10px 6px", textAlign: "center",
+                  background: isNext ? "rgba(201,182,136,.20)" : "rgba(255,255,255,.05)",
+                  border: `1px solid ${isNext ? "rgba(201,182,136,.7)" : "rgba(255,255,255,.10)"}`,
+                  opacity: isPast ? 0.62 : 1 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".8px",
+                  textTransform: "uppercase", color: isNext ? GOLD : "rgba(255,255,255,.8)" }}>
+                  {p.name}
+                </div>
+                <div style={{ marginTop: 3, fontSize: 15.5, fontWeight: 700, color: "#fff",
+                  fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                  {/* "12:54 PM" → "12:54" + a smaller "PM" (own line on phones). */}
+                  {p.time.replace(/\s*(AM|PM)$/i, "")}
+                  <span className="ampm" style={{ fontSize: 11, fontWeight: 600, marginLeft: 3,
+                    color: "rgba(255,255,255,.8)" }}>{(p.time.match(/(AM|PM)$/i) || [""])[0]}</span>
+                </div>
+                {isNext && (
+                  <div style={{ marginTop: 2, fontSize: 10.5, fontWeight: 700, color: GOLD,
+                    letterSpacing: ".6px", textTransform: "uppercase" }}>Next</div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+          gap: 10, flexWrap: "wrap", padding: "12px 4px 0" }}>
+          {times?.jummah ? (
+            <span style={{ fontSize: 12.5, color: "rgba(255,255,255,.8)" }}>
+              <strong style={{ color: "#fff" }}>Jummah:</strong> {times.jummah}
+            </span>
+          ) : <span />}
+          <button type="button" onClick={onMore} className="barlink" style={{ fontSize: 13 }}>
+            Prayer spaces &amp; full schedule <ChevronRight size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+      {/* Phones: shrink the tiles so all five still fit on one row. */}
+      <style>{`
+        @media (max-width: 520px) {
+          .home-prayer-grid { gap: 5px !important; }
+          .home-prayer-grid li { padding: 8px 2px !important; }
+          .home-prayer-grid li div:nth-child(1) { font-size: 10px !important; letter-spacing: .3px !important; }
+          .home-prayer-grid li div:nth-child(2) { font-size: 13.5px !important; white-space: normal !important; }
+          .home-prayer-grid .ampm { display: block; margin-left: 0 !important; font-size: 9.5px !important; }
+        }
+      `}</style>
+    </div>
   );
 }
 
@@ -3752,76 +3742,6 @@ function Tasbih({ height = 190, opacity = 0.5, color = GOLD, style }) {
         )}
       </g>
     </svg>
-  );
-}
-
-/* Mihrab arch whose outline draws itself, then breathes gently. */
-function HeroArch({ box }) {
-  const reduced = useReducedMotion();
-  const [drawn, setDrawn] = useState(false);
-  useEffect(() => {
-    if (reduced) { setDrawn(true); return; }
-    const t = setTimeout(() => setDrawn(true), 120);
-    return () => clearTimeout(t);
-  }, [reduced]);
-
-  // Fixed proportions for the curve shape itself — only the CONTAINER
-  // (below) is resized to actually fit the rosette + CTA buttons; the
-  // viewBox stays the same so the mihrab silhouette doesn't distort.
-  const W = 220, H = 300, SPRING = 168;
-  const { ticks, stars } = React.useMemo(() => archOrnamentGeometry(W, H, SPRING, 6, 9), []);
-
-  // NOTE: the centering translate and the float animation must live on
-  // separate elements — a CSS animation that sets `transform` would otherwise
-  // overwrite `translateX(-50%)` and knock the arch off-centre.
-  const outer = box
-    ? { position: "absolute", top: box.top, left: "50%", transform: "translateX(-50%)",
-        width: Math.max(box.width, 320), height: box.height, opacity: 0.55, pointerEvents: "none" }
-    : { position: "absolute", top: 40, left: "50%", transform: "translateX(-50%)",
-        width: "min(720px, 92%)", height: "90%", opacity: 0.55, pointerEvents: "none" };
-
-  const glowFilter = reduced ? "none"
-    : `drop-shadow(0 0 7px color-mix(in srgb, ${NEON_PURPLE} calc((1 - var(--fx-mix, .5)) * 100%), ${NEON_GOLD} calc(var(--fx-mix, .5) * 100%)))`;
-
-  return (
-    <div aria-hidden="true" style={outer}>
-      <div className={reduced ? "" : "floaty-slow"} style={{ width: "100%", height: "100%" }}>
-        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" preserveAspectRatio="none">
-          {/* outer mihrab outline — self-draws in, then carries the
-              scroll-reactive purple/gold glow (--fx-mix, set by
-              useHeroScrollFX on the section) */}
-          <path d={archPath(W, H, SPRING)} fill="none" stroke="rgba(201,182,136,.55)"
-            strokeWidth="1.4" pathLength="1"
-            style={{
-              strokeDasharray: 1,
-              strokeDashoffset: drawn ? 0 : 1,
-              transition: reduced ? "none" : `stroke-dashoffset 2600ms ${EASE.outSoft} 200ms`,
-              filter: glowFilter,
-            }} />
-
-          {/* The smaller inset concentric frame that used to sit here (a
-              continuously scroll-rotated <g>, independent of the outer
-              arch outline above) was removed — it read as an unnecessary
-              extra moving piece next to the rosette wheel already spinning
-              behind it, and cost a per-frame transform recalculation for
-              not much visual payoff. The outer arch outline, voussoir fan,
-              and star accents below are untouched. */}
-
-          {/* voussoir fan — short radiating ticks along the curve, like
-              wedge-stone joints on a real mihrab */}
-          <g stroke="rgba(201,182,136,.45)" strokeWidth="1"
-            style={{ opacity: drawn ? 1 : 0, transition: reduced ? "none" : `opacity 900ms ${EASE.outSoft} 1500ms` }}>
-            {ticks.map((t, i) => <line key={i} x1={t[0]} y1={t[1]} x2={t[2]} y2={t[3]} />)}
-          </g>
-
-          {/* 8-point star accents at the shoulders + apex — the site's
-              signature motif, worked into the arch itself */}
-          <g fill={GOLD} style={{ opacity: drawn ? 0.6 : 0, transition: reduced ? "none" : `opacity 900ms ${EASE.outSoft} 1700ms` }}>
-            {stars.map((s, i) => <polygon key={i} points={s} />)}
-          </g>
-        </svg>
-      </div>
-    </div>
   );
 }
 
@@ -4068,7 +3988,9 @@ function Coverflow({ list, n, grad }) {
         onKeyDown={onKeyDown}
         style={{ position: "relative", width: "100%", height: stageHeight,
           display: "flex", alignItems: "center", justifyContent: "center",
-          perspective: 1400, outline: "none", touchAction: "pan-y" }}>
+          // No outline:"none" here: the global :focus-visible ring must show
+          // when keyboard users Tab onto the carousel (WCAG 2.4.7).
+          perspective: 1400, touchAction: "pan-y" }}>
         <div style={{ position: "relative", width: cardW, height: cardH, transformStyle: "preserve-3d" }}>
           {list.map((it, i) => {
             let rel = i - active;
@@ -4139,13 +4061,19 @@ function Coverflow({ list, n, grad }) {
           gap: 12, marginTop: 18 }}>
           <button className="btn" aria-label="Previous photo" onClick={() => step(-1)}
             style={boardNavBtn}><ChevronLeft size={17} color="var(--accent)" /></button>
-          <div style={{ display: "flex", gap: 7 }}>
+          {/* Each dot is a 24×24px button (WCAG 2.5.8 minimum target size)
+              with the small 8px dot drawn inside it, so it looks the same
+              but is far easier to tap. */}
+          <div style={{ display: "flex", gap: 0 }}>
             {list.map((it, n2) => (
               <button key={it.id ?? n2} onClick={() => !lockRef.current && (lock(), setActive(n2))}
-                aria-label={`Go to photo ${n2 + 1}`} aria-current={n2 === active}
-                style={{ width: 8, height: 8, borderRadius: 99, border: "none", padding: 0,
-                  cursor: "pointer", background: n2 === active ? GOLD : "var(--border-strong)",
+                aria-label={`Go to photo ${n2 + 1}`} aria-current={n2 === active ? "true" : undefined}
+                style={{ width: 24, height: 24, border: "none", padding: 0, background: "none",
+                  cursor: "pointer", display: "grid", placeItems: "center" }}>
+                <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 99,
+                  background: n2 === active ? GOLD : "var(--border-strong)",
                   transition: `background ${DUR.fast}ms ${EASE.out}` }} />
+              </button>
             ))}
           </div>
           <button className="btn" aria-label="Next photo" onClick={() => step(1)}
@@ -4900,7 +4828,7 @@ function SectionLight({ tone = "violet", intensity = 1, placement = "top-left" }
 /* ── Announcement bar ───────────────────────────────────────────────────
    Sits above the nav. Dismissal is remembered per-message, so editing the
    text in the admin panel re-shows it to everyone who dismissed the old one. */
-function AnnouncementBar({ bar, onNav }) {
+function AnnouncementBar({ bar, onNav, ready = true }) {
   // No persistence on purpose: dismissing the bar should only hide it for
   // the current page view, not forever — refreshing (or just visiting
   // again later) brings it back. Plain component state does exactly that
@@ -4910,6 +4838,20 @@ function AnnouncementBar({ bar, onNav }) {
   const [dismissed, setDismissed] = useState(false);
 
   if (!bar?.on || !bar?.text || dismissed) return null;
+
+  // Before the real content has arrived (first visit only), draw the bar's
+  // frame with a single blank line instead of the seed's placeholder text.
+  // The seed text wraps differently from the real text, so swapping one for
+  // the other made the whole page jump (Lighthouse CLS). This happens
+  // behind the loading curtain, so nobody sees the empty strip.
+  if (!ready) {
+    return (
+      <div aria-hidden="true" style={{ position: "relative", zIndex: 51,
+        background: `linear-gradient(100deg, ${PURPLE_D}, ${PURPLE} 55%, ${VIOLET})` }}>
+        <div style={{ padding: "9px 20px", fontSize: 13.5, lineHeight: 1.45 }}>&nbsp;</div>
+      </div>
+    );
+  }
 
   const close = () => setDismissed(true);
 
@@ -5005,7 +4947,14 @@ function MailingList({ data }) {
     } catch {}
 
     setBusy(true);
-    const res = await subscribe({ firstName: first, lastName: last, email: emailClean, status });
+    // supabase-js is loaded on demand here, the first time someone signs up.
+    let res;
+    try {
+      const { subscribe } = await loadSupabase();
+      res = await subscribe({ firstName: first, lastName: last, email: emailClean, status });
+    } catch (err) {
+      res = { ok: false, error: "Couldn't reach the server. Please try again." };
+    }
     setBusy(false);
     if (res.ok) {
       track("mailing_signup", { already_subscribed: !!res.already });
@@ -5051,7 +5000,9 @@ function MailingList({ data }) {
                 </a>
               </>
             ) : (
-              <form onSubmit={submit}>
+              <form onSubmit={submit} data-clarity-mask="true">
+                {/* data-clarity-mask: Microsoft Clarity never records anything
+                    inside the signup form (see src/analytics.js). */}
                 {/* Honeypot — visually hidden, off-screen, not tabbable. Bots
                     that auto-fill fields will trip it; humans never see it. */}
                 <div aria-hidden="true" style={{ position: "absolute", left: "-9999px",
@@ -5077,6 +5028,8 @@ function MailingList({ data }) {
                   <label style={lbl} htmlFor="ml-email">Email</label>
                   <input id="ml-email" type="email" required style={inpSm} value={email}
                     autoComplete="email" placeholder="you@uw.edu"
+                    aria-invalid={msg && !msg.ok ? "true" : undefined}
+                    aria-describedby={msg && !msg.ok ? "ml-error" : undefined}
                     onChange={(e) => setEmail(e.target.value)} />
                 </div>
                 <div style={{ marginTop: 10 }}>
@@ -5092,12 +5045,17 @@ function MailingList({ data }) {
                 <button type="submit" className="btn" disabled={busy}
                   style={{ ...btnPurple, width: "100%", marginTop: 16, opacity: busy ? .6 : 1,
                     display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                  <Send size={15} /> {busy ? "Signing you up…" : "Sign up"}
+                  <Send size={15} aria-hidden="true" /> {busy ? "Signing you up…" : "Sign up"}
                 </button>
-                {msg && (
-                  <div role="status" style={{ marginTop: 12, fontSize: 13.5, lineHeight: 1.5,
-                    color: msg.ok ? "var(--accent)" : "#c0392b" }}>{msg.text}</div>
-                )}
+                {/* Two always-present live regions (WCAG 4.1.3): screen
+                    readers reliably announce text that appears INSIDE an
+                    existing region, but often miss a region that is inserted
+                    already filled. Success is polite; errors interrupt. */}
+                <div role="status" style={{ marginTop: msg?.ok ? 12 : 0, fontSize: 13.5,
+                  lineHeight: 1.5, color: "var(--accent)" }}>{msg?.ok ? msg.text : ""}</div>
+                <div role="alert" id="ml-error" style={{ marginTop: msg && !msg.ok ? 12 : 0,
+                  fontSize: 13.5, lineHeight: 1.5, color: "var(--error, #c0392b)" }}>
+                  {msg && !msg.ok ? msg.text : ""}</div>
               </form>
             )}
           </div>
@@ -5138,6 +5096,10 @@ function SearchOverlay({ open, onClose, data, onNav }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef(null);
+  const dialogRef = useRef(null);
+  // Focus starts in the search box (data-autofocus), Tab stays inside the
+  // dialog, and focus returns to the search button when it closes.
+  useDialogFocus(open, dialogRef);
   const index = React.useMemo(() => buildIndex(data), [data]);
 
   const results = React.useMemo(() => {
@@ -5160,7 +5122,6 @@ function SearchOverlay({ open, onClose, data, onNav }) {
   }, [q, index]);
 
   useEffect(() => { setSel(0); }, [q]);
-  useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 40); }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -5168,7 +5129,9 @@ function SearchOverlay({ open, onClose, data, onNav }) {
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowDown") { e.preventDefault(); setSel((i) => Math.min(i + 1, results.length - 1)); }
       else if (e.key === "ArrowUp") { e.preventDefault(); setSel((i) => Math.max(i - 1, 0)); }
-      else if (e.key === "Enter" && results[sel]) {
+      // Only while typing in the box: if a result button has focus, Enter
+      // should activate THAT button (its own onClick), not the highlighted row.
+      else if (e.key === "Enter" && results[sel] && document.activeElement === inputRef.current) {
         e.preventDefault(); onNav(results[sel].section); onClose();
       }
     };
@@ -5179,7 +5142,7 @@ function SearchOverlay({ open, onClose, data, onNav }) {
   if (!open) return null;
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="Search" className="modalBg"
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Search" className="modalBg"
       onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 120, background: "rgba(20,12,40,.55)",
         backdropFilter: "blur(5px)", display: "grid", placeItems: "start center",
@@ -5188,16 +5151,30 @@ function SearchOverlay({ open, onClose, data, onNav }) {
         style={{ ...card, width: "100%", maxWidth: 560, padding: 0, overflow: "hidden" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px",
           borderBottom: "1px solid var(--border)" }}>
-          <Search size={17} color="var(--accent)" />
-          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)}
+          <Search size={17} color="var(--accent)" aria-hidden="true" />
+          {/* Combobox pattern: arrow keys move the highlighted result while
+              focus stays in the input; aria-activedescendant tells screen
+              readers which result that is. */}
+          <input ref={inputRef} data-autofocus value={q} onChange={(e) => setQ(e.target.value)}
             placeholder="Search events, programs, people…"
-            aria-label="Search the site"
+            aria-label="Search the site" role="combobox" aria-expanded={results.length > 0}
+            aria-controls="search-results" aria-autocomplete="list"
+            aria-activedescendant={results[sel] ? `search-result-${sel}` : undefined}
             style={{ flex: 1, border: "none", outline: "none", background: "transparent",
               fontFamily: "inherit", fontSize: 16, color: "var(--text)" }} />
-          <kbd style={{ fontSize: 11, color: "var(--text-faint)",
-            border: "1px solid var(--border-strong)", borderRadius: 6, padding: "2px 6px" }}>Esc</kbd>
+          {/* A real close button (touch and screen-reader users may have no
+              Escape key); it still shows the "Esc" hint visually. */}
+          <button type="button" onClick={onClose} aria-label="Close search"
+            style={{ fontSize: 11, color: "var(--text-muted)", background: "none", cursor: "pointer",
+              fontFamily: "inherit", border: "1px solid var(--border-strong)", borderRadius: 6,
+              padding: "2px 6px" }}>Esc</button>
         </div>
-        <div style={{ maxHeight: "52vh", overflowY: "auto", padding: 8 }}>
+        {/* Announces the number of matches as the visitor types. */}
+        <div className="sr-only" role="status" aria-live="polite">
+          {q.trim() ? `${results.length} result${results.length === 1 ? "" : "s"}` : ""}
+        </div>
+        <div id="search-results" role="listbox" aria-label="Search results"
+          style={{ maxHeight: "52vh", overflowY: "auto", padding: 8 }}>
           {!q.trim() && (
             <div style={{ padding: "18px 12px", fontSize: 13.5, color: "var(--text-faint)",
               lineHeight: 1.7 }}>
@@ -5211,6 +5188,7 @@ function SearchOverlay({ open, onClose, data, onNav }) {
           )}
           {results.map((r, i) => (
             <button key={`${r.type}-${r.title}-${i}`}
+              id={`search-result-${i}`} role="option" aria-selected={i === sel}
               onMouseEnter={() => setSel(i)}
               onClick={() => { onNav(r.section); onClose(); }}
               style={{ display: "flex", alignItems: "center", gap: 12, width: "100%",
@@ -5778,13 +5756,17 @@ function ImageSlideshow({ images, alt }) {
           </button>
           {/* dot indicators — also clickable, jump straight to a slide */}
           <div style={{ position: "absolute", left: 0, right: 0, bottom: 10,
-            display: "flex", justifyContent: "center", gap: 6 }}>
+            display: "flex", justifyContent: "center", gap: 0 }}>
+            {/* 24px-tall tap targets around the small visible pills (WCAG 2.5.8). */}
             {images.map((im, di) => (
               <button key={im.id ?? di} type="button" onClick={() => setI(di)}
-                aria-label={`Go to photo ${di + 1}`} aria-current={di === i}
-                style={{ width: di === i ? 16 : 6, height: 6, borderRadius: 999, border: "none",
-                  padding: 0, cursor: "pointer", background: di === i ? "#fff" : "rgba(255,255,255,.45)",
+                aria-label={`Go to photo ${di + 1}`} aria-current={di === i ? "true" : undefined}
+                style={{ minWidth: 24, height: 24, border: "none", padding: "0 4px", background: "none",
+                  cursor: "pointer", display: "grid", placeItems: "center" }}>
+                <span aria-hidden="true" style={{ width: di === i ? 16 : 6, height: 6, borderRadius: 999,
+                  background: di === i ? "#fff" : "rgba(255,255,255,.7)",
                   transition: reduced ? "none" : `width ${DUR.fast}ms ${EASE.out}` }} />
+              </button>
             ))}
           </div>
         </>
@@ -5801,6 +5783,8 @@ function ImageSlideshow({ images, alt }) {
 
 function PhotoLightbox({ photos, index, onClose, onNav }) {
   const overlayRef = useRef(null);
+  // Focus moves to the Close button on open and back to the photo on close.
+  useDialogFocus(index !== null, overlayRef);
   useEffect(() => {
     if (index === null) return;
     const onKey = (e) => {
@@ -5854,7 +5838,7 @@ function PhotoLightbox({ photos, index, onClose, onNav }) {
       style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(10,8,16,.88)",
         backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20,
         touchAction: "pan-y" }}>
-      <button onClick={onClose} aria-label="Close photo"
+      <button data-autofocus onClick={onClose} aria-label="Close photo"
         style={{ position: "absolute", top: "max(18px, env(safe-area-inset-top))",
           right: "max(18px, env(safe-area-inset-right))", width: 44, height: 44, borderRadius: "50%",
           border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
@@ -5991,6 +5975,8 @@ function BoardSection({ data }) {
    lightbox and admin panel elsewhere in the site, so the "zoom in" feel is
    consistent across the app. Escape key and backdrop click both close it. */
 function BoardMemberModal({ member, onClose }) {
+  const dialogRef = useRef(null);
+  useDialogFocus(!!member, dialogRef);   // focus in, Tab trap, focus back
   useEffect(() => {
     if (!member) return;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -6010,10 +5996,10 @@ function BoardMemberModal({ member, onClose }) {
     .slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("");
 
   return (
-    <div role="dialog" aria-modal="true" aria-label={member.name} className="modalBg" onClick={onClose}
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={member.name} className="modalBg" onClick={onClose}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,8,16,.82)",
         backdropFilter: "blur(6px)", display: "grid", placeItems: "center", padding: 20 }}>
-      <button onClick={onClose} aria-label="Close"
+      <button data-autofocus onClick={onClose} aria-label={`Close ${member.name || "profile"}`}
         style={{ position: "absolute", top: 18, right: 18, width: 40, height: 40, borderRadius: "50%",
           border: "1px solid rgba(255,255,255,.28)", background: "rgba(20,17,24,.72)", color: "#fff",
           display: "grid", placeItems: "center", cursor: "pointer" }}>
@@ -6717,7 +6703,7 @@ function Footer({ onAdmin, data, onNav }) {
           {columns.map((col) => (
             <div key={col.title}>
               <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: "1.6px",
-                textTransform: "uppercase", color: "rgba(255,255,255,.5)", marginBottom: 14 }}>
+                textTransform: "uppercase", color: "rgba(255,255,255,.66)", marginBottom: 14 }}>
                 {col.title}</div>
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 9 }}>
                 {col.items.map((it) => (
@@ -6775,17 +6761,19 @@ function Footer({ onAdmin, data, onNav }) {
               per the request that this read as a lighter footnote underneath it. */}
           <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "8px 24px",
             alignItems: "baseline", justifyContent: "space-between" }}>
-            <p style={{ margin: 0, maxWidth: 640, fontSize: 11, lineHeight: 1.6,
-              color: "rgba(255,255,255,.4)" }}>
+            <p style={{ margin: 0, maxWidth: 640, fontSize: 12, lineHeight: 1.6,
+              color: "rgba(255,255,255,.62)" }}>
               MSA UW is a student-run, non-profit Registered Student Organization. Views and
               activities are those of the organization and do not represent official
               positions of the University of Washington.
             </p>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <a href="https://www.washington.edu/online/privacy/" target="_blank"
-                rel="noopener noreferrer" className="footlink-faint">Privacy</a>
-              <a href="https://www.washington.edu/accessibility/" target="_blank"
-                rel="noopener noreferrer" className="footlink-faint">Accessibility</a>
+              {/* Our own plain-language statements (src/components/PolicyPages.jsx).
+                  Real links (not buttons) so they can be opened in a new tab. */}
+              <a href="#/privacy" onClick={(e) => { e.preventDefault(); onNav?.("/privacy"); }}
+                className="footlink-faint">Privacy</a>
+              <a href="#/accessibility" onClick={(e) => { e.preventDefault(); onNav?.("/accessibility"); }}
+                className="footlink-faint">Accessibility</a>
               <a href="https://www.washington.edu/civilrights/policies-and-guidance/statement-of-nondiscrimination/"
                 target="_blank" rel="noopener noreferrer" className="footlink-faint">Non-Discrimination</a>
             </div>
@@ -6794,11 +6782,13 @@ function Footer({ onAdmin, data, onNav }) {
       </div>
 
       <style>{`
-        .footlink { color: rgba(255,255,255,.72); text-decoration: none; font-size: 13.5;
+        .footlink { color: rgba(255,255,255,.72); text-decoration: none; font-size: 13.5px;
                     transition: color ${DUR.fast}ms ${EASE.out}, transform ${DUR.fast}ms ${EASE.out};
                     display: inline-block; }
         .footlink:hover { color: ${GOLD}; transform: translateX(2px); }
-        .footlink-faint { color: rgba(255,255,255,.4); text-decoration: none; font-size: 11px;
+        /* .62 white on the near-black footer ≈ 7:1 contrast. The old .4 was
+           ≈ 3.6:1, below WCAG AA's 4.5:1 for small text. */
+        .footlink-faint { color: rgba(255,255,255,.62); text-decoration: none; font-size: 12px;
                     transition: color ${DUR.fast}ms ${EASE.out}; white-space: nowrap; }
         .footlink-faint:hover { color: ${GOLD}; }
         .socialbtn { width: 38px; height: 38px; border-radius: 11px; display: grid;
@@ -6822,1513 +6812,10 @@ function Footer({ onAdmin, data, onNav }) {
   );
 }
 
-/* ============================================================
-   ADMIN
-   ============================================================ */
-function AdminPanel({ data, setData, isAdmin, setIsAdmin, persist, saving, onClose }) {
-  const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState("hero");
-  const [savedMsg, setSavedMsg] = useState("");
-  // Snapshot of content as it was when the panel opened / last saved, so we
-  // can log which sections an admin actually changed.
-  const baselineRef = useRef(null);
-  if (baselineRef.current === null && data) baselineRef.current = data;
-
-  const login = async () => {
-    setErr(""); setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
-    setBusy(false);
-    if (error) setErr(error.message || "Login failed. Check your email and password.");
-    else { setIsAdmin(true); setPw(""); }
-  };
-
-  const logout = async () => {
-    await supabase.auth.signOut();
-    setIsAdmin(false); setEmail(""); setPw("");
-  };
-
-  // Which top-level content sections changed since the last snapshot.
-  const changedSections = (before, after) => {
-    if (!before || !after) return [];
-    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
-    const changed = [];
-    for (const k of keys) {
-      if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) changed.push(k);
-    }
-    return changed;
-  };
-
-  const save = async () => {
-    setSavedMsg("");
-    const res = await persist(data);
-    if (res.ok) {
-      setSavedMsg("Saved — changes are now live.");
-      setTimeout(() => setSavedMsg(""), 3000);
-      // Best-effort audit log: record who saved and what changed. Never
-      // blocks or fails the save (which already succeeded).
-      const changed = changedSections(baselineRef.current, data);
-      const summary = changed.length
-        ? `Edited: ${changed.join(", ")}`
-        : "Saved (no field-level changes detected)";
-      logAdminChange(summary);
-      baselineRef.current = data;   // reset baseline after a successful save
-    } else setSavedMsg("Save failed: " + res.error);
-  };
-
-  return (
-    <div role="dialog" aria-modal="true" className="modalBg" style={{ position: "fixed", inset: 0, zIndex: 100,
-      background: "rgba(20,12,40,.55)", backdropFilter: "blur(5px)", display: "grid",
-      placeItems: "center", padding: 16 }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="modalIn" style={{ background: "var(--surface)", borderRadius: 20,
-        width: "100%", maxWidth: isAdmin ? 880 : 420, maxHeight: "90vh", overflow: "hidden",
-        display: "flex", flexDirection: "column", boxShadow: "0 30px 80px rgba(0,0,0,.4)",
-        transition: `max-width ${DUR.base}ms ${EASE.out}` }}>
-
-        <div style={{ padding: "18px 24px", borderBottom: "1px solid var(--border)",
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-          background: GRAD_DEEP, color: "#fff" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {isAdmin ? <Edit3 size={20} /> : <Lock size={20} />}
-            <span style={{ fontWeight: 700, fontSize: 17 }}>
-              {isAdmin ? "Admin dashboard" : "Admin login"}</span>
-          </div>
-          <button className="btn" onClick={onClose} aria-label="Close" style={{ background: "rgba(255,255,255,.15)",
-            border: "none", borderRadius: 8, width: 34, height: 34, cursor: "pointer",
-            display: "grid", placeItems: "center" }}>
-            <X size={18} color="#fff" /></button>
-        </div>
-
-        {!isAdmin ? (
-          <div style={{ padding: 28 }}>
-            <p style={{ margin: "0 0 18px", color: "var(--text-muted)", fontSize: 14.5, lineHeight: 1.6 }}>
-              Officer login. Sign in to edit events, prayer times, programs, and more.
-            </p>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && login()}
-              placeholder="Email" autoComplete="username" style={{ ...inp, marginBottom: 10 }} autoFocus />
-            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && login()}
-              placeholder="Password" autoComplete="current-password" style={inp} />
-            {err && <div style={{ color: "#c0392b", fontSize: 13.5, marginTop: 10 }}>{err}</div>}
-            <button className="btn" onClick={login} disabled={busy}
-              style={{ ...btnPurple, width: "100%", marginTop: 16, opacity: busy ? .6 : 1 }}>
-              {busy ? "Signing in…" : "Log in"}</button>
-            <p style={{ margin: "16px 0 0", fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5 }}>
-              Accounts are managed by MSA admins in Supabase. Ask an admin to add you if you
-              need access.
-            </p>
-          </div>
-        ) : (
-          <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
-            <div style={{ width: 190, borderRight: "1px solid var(--border)", padding: 12,
-              overflowY: "auto", background: "var(--surface-2)" }}>
-              {[
-                { group: "Global", items: [["bar", "Announcement bar"], ["copy", "Section text"], ["contact", "Contact & links"], ["links", "Quick links"]] },
-                { group: "Home", items: [["hero", "Hero copy"], ["newhere", "New here?"], ["gallery", "Moments (photos)"], ["announce", "Announcements"]] },
-                { group: "About", items: [["about", "About us"], ["donate", "Donate"], ["sponsors", "Sponsors"]] },
-                { group: "Prayer", items: [["times", "Prayer times"], ["spaces", "Prayer spaces"], ["house", "Islamic House"]] },
-                { group: "Events", items: [["events", "Weekly events"], ["calendar", "Calendar"], ["stats", "Stats / metrics"], ["programs", "Programs"]] },
-                { group: "Community", items: [["board", "Board members"], ["instagram", "Instagram"], ["tiktok", "TikTok"], ["mailing", "Mailing list"], ["merch", "Merch"]] },
-                { group: "Admin", items: [["history", "Change history"]] },
-              ].map(({ group, items }) => (
-                <div key={group} style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "1px",
-                    textTransform: "uppercase", color: "var(--text-faint)", padding: "8px 12px 4px" }}>
-                    {group}
-                  </div>
-                  {items.map(([k, lbl]) => (
-                    <button key={k} onClick={() => setTab(k)} style={{ display: "block", width: "100%",
-                      textAlign: "left", padding: "9px 12px", borderRadius: 9, border: "none",
-                      background: tab === k ? PURPLE : "transparent",
-                      color: tab === k ? "#fff" : "var(--text-soft)",
-                      fontWeight: 600, fontSize: 13.5, cursor: "pointer", marginBottom: 2,
-                      fontFamily: "inherit" }}>{lbl}</button>
-                  ))}
-                </div>
-              ))}
-              <button onClick={logout} style={{ display: "flex",
-                alignItems: "center", gap: 7, width: "100%", padding: "10px 12px", borderRadius: 9,
-                border: "none", background: "transparent", color: "#c0392b", fontWeight: 600,
-                fontSize: 13.5, cursor: "pointer", marginTop: 12, fontFamily: "inherit" }}>
-                <LogOut size={15} /> Log out</button>
-            </div>
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--border)",
-                background: "var(--surface-2)", flexWrap: "wrap" }}>
-                <span style={{ fontSize: 13, color: savedMsg.startsWith("Save failed") ? "#c0392b" : "#5a5468" }}>
-                  {savedMsg || "Edit below, then Save to publish to the live site."}</span>
-                <button className="btn" onClick={save} disabled={saving}
-                  style={{ ...btnPurple, display: "inline-flex", alignItems: "center", gap: 7,
-                    opacity: saving ? .6 : 1 }}>
-                  <Save size={15} /> {saving ? "Saving…" : "Save changes"}</button>
-              </div>
-              <div style={{ flex: 1, padding: 24, overflowY: "auto" }}>
-                <Editor tab={tab} data={data} setData={setData} />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* Change history — shows the admin_log audit trail (who saved what, when).
-   Reads on mount; authenticated-only via RLS. */
-function AdminHistory() {
-  const [state, setState] = useState({ loading: true, rows: [], error: "" });
-  useEffect(() => {
-    let alive = true;
-    listAdminLog(100).then((res) => {
-      if (!alive) return;
-      if (res.ok) setState({ loading: false, rows: res.rows, error: "" });
-      else setState({ loading: false, rows: [], error: res.error });
-    });
-    return () => { alive = false; };
-  }, []);
-
-  const fmt = (iso) => {
-    try { return new Date(iso).toLocaleString(); } catch { return iso; }
-  };
-
-  return (
-    <Section title="Change history">
-      <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-        Every time an admin saves, we record who saved and which sections changed.
-        Most recent first.
-      </p>
-      {state.loading ? (
-        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading…</div>
-      ) : state.error ? (
-        <div style={{ padding: 14, borderRadius: 10, background: "var(--tint)",
-          fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-          Couldn't load the log{state.error ? `: ${state.error}` : ""}. If this is the first
-          time, make sure the <b>admin_log</b> table exists in Supabase (setup SQL is in
-          the code comments).
-        </div>
-      ) : state.rows.length === 0 ? (
-        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>No changes recorded yet.</div>
-      ) : (
-        <div style={{ display: "grid", gap: 8 }}>
-          {state.rows.map((r, i) => (
-            <div key={i} style={{ display: "grid", gap: 3, padding: "11px 14px", borderRadius: 10,
-              background: "var(--tint)", border: "1px solid var(--border)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10,
-                flexWrap: "wrap" }}>
-                <span style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>
-                  {r.actor_email || "unknown"}</span>
-                <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{fmt(r.created_at)}</span>
-              </div>
-              <div style={{ fontSize: 13.5, color: "var(--text-muted)" }}>{r.summary}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Section>
-  );
-}
-
-function Editor({ tab, data, setData }) {
-  const up = (patch) => setData({ ...data, ...patch });
-  // Lives here (not inside the "board" branch below) because hooks can't be
-  // called conditionally — Editor renders one big if/else chain keyed on tab.
-  const boardYears = data.boardYears && data.boardYears.length ? data.boardYears : ["2025-26"];
-  const [editYear, setEditYear] = useState(boardYears[0]);
-  const [newBoardYear, setNewBoardYear] = useState("");
-  // Same placeholder-vs-real-data race as the public board section: if the
-  // saved year list finishes loading after this panel already mounted, or a
-  // year gets deleted elsewhere, fall back to whatever's now first.
-  useEffect(() => {
-    if (boardYears.length && !boardYears.includes(editYear)) setEditYear(boardYears[0]);
-  }, [data.boardYears]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (tab === "hero")
-    return (
-      <Section title="Home hero">
-        <Field label="Kicker (small line above the headline)">
-          <input style={inp} value={data.hero.kicker ?? ""}
-            onChange={(e) => up({ hero: { ...data.hero, kicker: e.target.value } })} />
-        </Field>
-        <Field label="Headline — short lines read best over video">
-          <textarea style={{ ...inp, minHeight: 70 }} value={data.hero.title}
-            onChange={(e) => up({ hero: { ...data.hero, title: e.target.value } })} />
-        </Field>
-        <Field label="Mission statement">
-          <textarea style={{ ...inp, minHeight: 90 }} value={data.hero.mission}
-            onChange={(e) => up({ hero: { ...data.hero, mission: e.target.value } })} />
-        </Field>
-      </Section>
-    );
-
-  if (tab === "gallery")
-    return (
-      <ListEditor title="Photos" items={data.gallery}
-        onChange={(gallery) => up({ gallery })}
-        blank={{ caption: "New photo", tag: "Tag" }}
-        fields={[["img", "Photo", "image"], ["caption", "Caption"], ["tag", "Tag"]]} />
-    );
-
-  if (tab === "sponsors")
-    return (
-      <ListEditor title="Sponsors" items={data.sponsors}
-        onChange={(sponsors) => up({ sponsors })}
-        blank={{ name: "New sponsor", url: "" }}
-        fields={[["logo", "Logo", "image"], ["name", "Name"], ["url", "Website URL (optional)"]]} />
-    );
-
-  if (tab === "spaces")
-    return (
-      <ListEditor title="Prayer spaces" items={data.prayerSpaces}
-        onChange={(prayerSpaces) => up({ prayerSpaces })}
-        blank={{ name: "New space", loc: "Location", note: "", mapUrl: "" }}
-        fields={[["name", "Name"], ["loc", "Location"], ["note", "Note"],
-          ["mapUrl", "Google Maps link (optional)"]]} />
-    );
-
-  if (tab === "times") {
-    const t = data.prayerTimes;
-    const setT = (patch) => up({ prayerTimes: { ...t, ...patch } });
-    return (
-      <Section title="Islamic House prayer times">
-        <Field label="Masjidal Masjid ID (leave blank to use manual times below)">
-          <input style={inp} value={t.masjidalId || ""}
-            onChange={(e) => setT({ masjidalId: e.target.value })}
-            placeholder="e.g. RKxwXOdO" />
-        </Field>
-        <Field label="Masjidal full embed code (optional — overrides Masjid ID above if filled in)">
-          <textarea style={{ ...inp, minHeight: 70 }} value={t.masjidalEmbed || ""}
-            onChange={(e) => setT({ masjidalEmbed: e.target.value })}
-            placeholder="<iframe ...></iframe>" />
-        </Field>
-        <div style={{ margin: "4px 0 14px", padding: "10px 12px", borderRadius: 10,
-          background: "var(--tint)", fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6 }}>
-          The manual times below are only used when both Masjidal fields above are empty.
-          Jummah and Announcement always show, either way.
-        </div>
-        {["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"].map((p) => (
-          <Field key={p} label={`${p} (manual fallback)`}>
-            <input style={inp} value={t[p] ?? ""} onChange={(e) => setT({ [p]: e.target.value })} />
-          </Field>
-        ))}
-        <Field label="Jummah info (always shown)">
-          <input style={inp} value={t.jummah ?? ""}
-            placeholder="e.g. First khutbah 1:00 PM · Second 2:15 PM at Islamic House"
-            onChange={(e) => setT({ jummah: e.target.value })} />
-        </Field>
-        <Field label="Announcement (always shown — leave blank to hide the block)">
-          <textarea style={{ ...inp, minHeight: 70 }} value={t.announcement ?? ""}
-            placeholder="e.g. Ramadan taraweeh begins after Isha — all welcome."
-            onChange={(e) => setT({ announcement: e.target.value })} />
-        </Field>
-      </Section>
-    );
-  }
-
-  if (tab === "events") {
-    const setDay = (day, evs) => up({ events: { ...data.events, [day]: evs } });
-    return (
-      <Section title="Weekly events">
-        {DAYS.map((day) => (
-          <div key={day} style={{ marginBottom: 20, border: "1px solid var(--border)",
-            borderRadius: 12, overflow: "hidden" }}>
-            <div style={{ padding: "10px 14px", background: "var(--tint)", fontWeight: 700,
-              color: "var(--accent)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              {day}
-              <button onClick={() => setDay(day, [...(data.events[day] || []),
-                { id: Date.now(), name: "New event", time: "", loc: "", desc: "", img: "" }])}
-                style={miniBtn}><Plus size={14} /> Add</button>
-            </div>
-            <div style={{ padding: 12, display: "grid", gap: 12 }}>
-              {(data.events[day] || []).length === 0 &&
-                <div style={{ color: "var(--text-faint)", fontSize: 13, textAlign: "center", padding: 8 }}>No events</div>}
-              {(data.events[day] || []).map((e, idx) => (
-                <div key={e.id} style={{ display: "grid", gap: 6, gridTemplateColumns: "1fr 1fr auto" }}>
-                  <input style={inpSm} placeholder="Name" value={e.name}
-                    onChange={(ev) => { const c = [...data.events[day]]; c[idx] = { ...e, name: ev.target.value }; setDay(day, c); }} />
-                  <input style={inpSm} placeholder="Time" value={e.time}
-                    onChange={(ev) => { const c = [...data.events[day]]; c[idx] = { ...e, time: ev.target.value }; setDay(day, c); }} />
-                  <button onClick={() => setDay(day, data.events[day].filter((_, i) => i !== idx))}
-                    style={delBtn} aria-label="Delete"><Trash2 size={15} /></button>
-                  <input style={{ ...inpSm, gridColumn: "1 / 3" }} placeholder="Location" value={e.loc}
-                    onChange={(ev) => { const c = [...data.events[day]]; c[idx] = { ...e, loc: ev.target.value }; setDay(day, c); }} />
-                  <input style={{ ...inpSm, gridColumn: "1 / 4" }} placeholder="Description (optional)" value={e.desc}
-                    onChange={(ev) => { const c = [...data.events[day]]; c[idx] = { ...e, desc: ev.target.value }; setDay(day, c); }} />
-                  <div style={{ gridColumn: "1 / 4" }}>
-                    <ImageField label="Event photo (optional)" value={e.img || ""} folder="events"
-                      onChange={(url) => { const c = [...data.events[day]]; c[idx] = { ...e, img: url }; setDay(day, c); }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </Section>
-    );
-  }
-
-  if (tab === "programs")
-    return (
-      <ListEditor title="Programs" items={data.programs}
-        onChange={(programs) => up({ programs })}
-        blank={{ name: "New program", desc: "", icon: "star" }}
-        fields={[["name", "Name"], ["desc", "Description"], ["icon", "Icon (book/star/grad/sparkles/hand/users)"]]} />
-    );
-
-  if (tab === "copy") {
-    const SECTION_KEYS = [
-      ["about", "About"], ["quad", "The Quad"], ["announcements", "Announcements"], ["donate", "Donate"],
-      ["islamicHouse", "Islamic House"], ["gallery", "Photo gallery"],
-      ["sponsors", "Sponsors"], ["board", "Board members"], ["prayer", "Prayer"],
-      ["events", "Events"], ["programs", "Programs"], ["connect", "Connect"],
-      ["newHere", "New here?"], ["instagram", "Instagram"], ["tiktok", "TikTok"],
-    ];
-    const sections = data.sections || {};
-    const setSection = (key, patch) => up({
-      sections: { ...sections, [key]: { ...(sections[key] || {}), ...patch } },
-    });
-    return (
-      <Section title="Section text">
-        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Edit the heading and intro paragraph for each section. Leave a field blank to hide it.
-          Basic formatting works in the intro: <b>**bold**</b>, <i>*italic*</i>,
-          and [link text](https://example.com). Leave a blank line between paragraphs.
-        </p>
-        {SECTION_KEYS.map(([key, label]) => {
-          const cur = sections[key] || seed.sections[key] || {};
-          return (
-            <div key={key} style={{ marginBottom: 18, border: "1px solid var(--border)",
-              borderRadius: 12, overflow: "hidden" }}>
-              <div style={{ padding: "10px 14px", background: "var(--tint)",
-                fontWeight: 700, color: "var(--accent)", fontSize: 13.5 }}>{label}</div>
-              <div style={{ padding: 14, display: "grid", gap: 10 }}>
-                {key !== "donate" && (
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                      Eyebrow (small label above the heading)</label>
-                    <input style={inpSm} value={cur.eyebrow || ""}
-                      onChange={(e) => setSection(key, { eyebrow: e.target.value })} />
-                  </div>
-                )}
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                    Heading</label>
-                  <input style={inpSm} value={cur.title || ""}
-                    onChange={(e) => setSection(key, { title: e.target.value })} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                    Intro paragraph</label>
-                  <textarea style={{ ...inpSm, minHeight: 74, resize: "vertical" }}
-                    value={cur.body || ""}
-                    onChange={(e) => setSection(key, { body: e.target.value })} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </Section>
-    );
-  }
-
-  if (tab === "board") {
-    const board = data.board || [];
-    const setBoard = (next) => up({ board: next });
-    const setBoardYears = (next) => up({ boardYears: next });
-    const edit = (i, patch) => {
-      const c = [...board]; c[i] = { ...c[i], ...patch }; setBoard(c);
-    };
-    // Writes a member's full links array. Also clears the legacy single
-    // `href` field once links are edited, so the two can't drift out of
-    // sync — boardLinks() only falls back to `href` when `links` is empty.
-    const setMemberLinks = (i, links) => edit(i, { links, href: "" });
-    const add = () => setBoard([...board, {
-      id: Date.now(), name: "New member", role: "Role", year: editYear,
-      img: "", links: [], bio: "",
-    }]);
-    // New years go to the front of the list — that position is what both
-    // this panel and the public site treat as "current" by default, so a
-    // new board just adds their year and it's live immediately with no
-    // reordering needed. Use the arrows below to fix the order manually
-    // if a year is ever added out of sequence.
-    const addBoardYear = () => {
-      const y = newBoardYear.trim();
-      if (!y || boardYears.includes(y)) return;
-      setBoardYears([y, ...boardYears]);
-      setEditYear(y);
-      setNewBoardYear("");
-    };
-    const moveBoardYear = (yi, dir) => {
-      const ni = yi + dir;
-      if (ni < 0 || ni >= boardYears.length) return;
-      setBoardYears(arraySwap(boardYears, yi, ni));
-    };
-    const removeBoardYear = (y) => {
-      if (board.some((m) => (m.year || boardYears[0]) === y)) {
-        alert(`Move or delete every member listed under ${y} before removing that year.`);
-        return;
-      }
-      const next = boardYears.filter((x) => x !== y);
-      setBoardYears(next);
-      if (editYear === y) setEditYear(next[0] || "");
-    };
-    const groupIdxs = board.reduce((acc, m, idx) => {
-      if ((m.year || boardYears[0]) === editYear) acc.push(idx);
-      return acc;
-    }, []);
-    return (
-      <Section title="Board members">
-        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Photos upload to storage; links are optional and open from the pop-up shown when
-          someone clicks the card — add as many as you like (Instagram, LinkedIn, a website…).
-          Add a new year below for each incoming board rather than deleting the old one.
-        </p>
-
-        {/* Year management — top of this list is what the public site (and this
-            panel) show by default, so reorder with the arrows to change which
-            year counts as "current" without touching any code. */}
-        <div style={{ marginBottom: 18 }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-            Board years (top = shown by default)</label>
-          <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-            {boardYears.map((y, yi) => (
-              <div key={y} onClick={() => setEditYear(y)} style={{ display: "flex", alignItems: "center",
-                gap: 8, padding: "7px 10px", borderRadius: 8, cursor: "pointer",
-                border: `1px solid ${editYear === y ? "var(--accent)" : "var(--border)"}`,
-                background: editYear === y ? "var(--tint)" : "transparent" }}>
-                <span style={{ flex: 1, fontSize: 13.5, fontWeight: editYear === y ? 700 : 500 }}>
-                  {y}{yi === 0 && <span style={{ color: "var(--accent)", fontWeight: 700 }}> · current</span>}
-                </span>
-                <button onClick={(e) => { e.stopPropagation(); moveBoardYear(yi, -1); }}
-                  disabled={yi === 0} style={yi === 0 ? moveBtnOff : moveBtn}
-                  aria-label={`Move ${y} up`}><ArrowUp size={14} /></button>
-                <button onClick={(e) => { e.stopPropagation(); moveBoardYear(yi, 1); }}
-                  disabled={yi === boardYears.length - 1} style={yi === boardYears.length - 1 ? moveBtnOff : moveBtn}
-                  aria-label={`Move ${y} down`}><ArrowDown size={14} /></button>
-                {boardYears.length > 1 && (
-                  <button onClick={(e) => { e.stopPropagation(); removeBoardYear(y); }}
-                    style={{ ...delBtn, width: 30, height: 30 }} aria-label={`Remove ${y}`}>
-                    <Trash2 size={14} /></button>
-                )}
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <input style={{ ...inpSm, width: 110 }} placeholder="e.g. 2027-28" value={newBoardYear}
-              onChange={(e) => setNewBoardYear(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addBoardYear()} />
-            <button onClick={addBoardYear} style={miniBtn}><Plus size={14} /> Add year</button>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          marginBottom: 10 }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
-            {editYear} board</h4>
-          <button onClick={add} style={miniBtn}>
-            <Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 14 }}>
-          {groupIdxs.length === 0 && (
-            <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 8,
-              textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
-              None yet</div>
-          )}
-          {/* Reorder within the selected year by swapping with the nearest
-              neighbour that shares the same year — `i` below is the real
-              index into the full `board` array, but `pos`/`groupIdxs` track
-              this member's position within just this year's group, since
-              different years' members are interleaved in the array. */}
-          {groupIdxs.map((i, pos) => {
-            const m = board[i];
-            return (
-            <div key={m.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
-              <ImageField label="Photo" value={m.img || ""} folder="board"
-                onChange={(url) => edit(i, { img: url })} />
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Name</label>
-                  <input style={inpSm} value={m.name || ""}
-                    onChange={(e) => edit(i, { name: e.target.value })} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>Role / title</label>
-                  <input style={inpSm} value={m.role || ""}
-                    onChange={(e) => edit(i, { role: e.target.value })} />
-                </div>
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                  Links (optional)</label>
-                <div style={{ display: "grid", gap: 6 }}>
-                  {boardLinks(m).length === 0 && (
-                    <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>No links yet.</div>
-                  )}
-                  {boardLinks(m).map((l, li) => {
-                    const links = boardLinks(m);
-                    const editLink = (patch) => setMemberLinks(i,
-                      links.map((x, xi) => (xi === li ? { ...x, ...patch } : x)));
-                    return (
-                      <div key={l.id ?? li} style={{ display: "grid", gap: 6,
-                        gridTemplateColumns: "1fr 1.4fr auto", alignItems: "center" }}>
-                        <input style={inpSm} placeholder="Label (optional)" value={l.label || ""}
-                          onChange={(e) => editLink({ label: e.target.value })} />
-                        <input style={inpSm} placeholder="https://…" value={l.url || ""}
-                          onChange={(e) => editLink({ url: e.target.value })} />
-                        <button onClick={() => setMemberLinks(i, links.filter((_, xi) => xi !== li))}
-                          style={{ ...delBtn, width: 30, height: 30 }} aria-label="Remove link">
-                          <Trash2 size={14} /></button>
-                      </div>
-                    );
-                  })}
-                </div>
-                <button onClick={() => setMemberLinks(i, [...boardLinks(m), { id: Date.now(), label: "", url: "" }])}
-                  style={{ ...miniBtn, marginTop: 8 }}>
-                  <Plus size={13} /> Add link</button>
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>
-                  Mini bio</label>
-                <textarea style={{ ...inpSm, minHeight: 70, resize: "vertical" }}
-                  value={m.bio || ""} onChange={(e) => edit(i, { bio: e.target.value })} />
-              </div>
-              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
-                <button onClick={() => pos > 0 && setBoard(arraySwap(board, i, groupIdxs[pos - 1]))}
-                  disabled={pos === 0} style={pos === 0 ? moveBtnOff : moveBtn}
-                  aria-label={`Move ${m.name} up`}><ArrowUp size={14} /></button>
-                <button onClick={() => pos < groupIdxs.length - 1 && setBoard(arraySwap(board, i, groupIdxs[pos + 1]))}
-                  disabled={pos === groupIdxs.length - 1} style={pos === groupIdxs.length - 1 ? moveBtnOff : moveBtn}
-                  aria-label={`Move ${m.name} down`}><ArrowDown size={14} /></button>
-                <button onClick={() => setBoard(board.filter((_, n) => n !== i))}
-                  style={delBtn} aria-label={`Delete ${m.name}`}><Trash2 size={15} /></button>
-              </div>
-            </div>
-            );
-          })}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "announce") {
-    const items = data.announcements || [];
-    const set = (next) => up({ announcements: next });
-    const edit = (i, patch) => { const c = [...items]; c[i] = { ...c[i], ...patch }; set(c); };
-    return (
-      <Section title="Announcements">
-        <p style={{ margin: "-8px 0 16px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Shown directly below the hero. Pinned items appear first. Leave the date blank to hide it.
-        </p>
-        <button className="btn" onClick={() => set([...items, { id: Date.now(), kind: "notice",
-          title: "New announcement", body: "", date: "", pinned: false, href: "" }])}
-          style={{ ...btnPurple, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Plus size={16} /> Add announcement</button>
-        <div style={{ display: "grid", gap: 14 }}>
-          {items.length === 0 && (
-            <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 10, textAlign: "center",
-              border: "1px dashed var(--border)", borderRadius: 10 }}>None yet</div>
-          )}
-          {items.map((a, i) => (
-            <div key={a.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-                <div>
-                  <label style={lbl}>Type</label>
-                  <select style={inpSm} value={a.kind || "notice"}
-                    onChange={(e) => edit(i, { kind: e.target.value })}>
-                    <option value="notice">Notice</option>
-                    <option value="deadline">Deadline</option>
-                    <option value="event">Event update</option>
-                    <option value="ramadan">Ramadan</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={lbl}>Date label (optional)</label>
-                  <input style={inpSm} placeholder="e.g. Fri 12 Sep" value={a.date || ""}
-                    onChange={(e) => edit(i, { date: e.target.value })} />
-                </div>
-              </div>
-              <div>
-                <label style={lbl}>Title</label>
-                <input style={inpSm} value={a.title || ""}
-                  onChange={(e) => edit(i, { title: e.target.value })} />
-              </div>
-              <div>
-                <label style={lbl}>Body</label>
-                <textarea style={{ ...inpSm, minHeight: 68, resize: "vertical" }} value={a.body || ""}
-                  onChange={(e) => edit(i, { body: e.target.value })} />
-              </div>
-              <div>
-                <label style={lbl}>Link (optional)</label>
-                <input style={inpSm} placeholder="https://…" value={a.href || ""}
-                  onChange={(e) => edit(i, { href: e.target.value })} />
-              </div>
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8,
-                fontSize: 13, color: "var(--text-soft)", cursor: "pointer" }}>
-                <input type="checkbox" checked={!!a.pinned}
-                  onChange={(e) => edit(i, { pinned: e.target.checked })} />
-                Pin to the top
-              </label>
-              <button onClick={() => set(items.filter((_, n) => n !== i))}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete announcement"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "about") {
-    const about = data.about || seed.about;
-    const setAbout = (patch) => up({ about: { ...about, ...patch } });
-    const pillars = about.pillars || [];
-    const editP = (i, patch) => {
-      const c = [...pillars]; c[i] = { ...c[i], ...patch }; setAbout({ pillars: c });
-    };
-    return (
-      <Section title="About section">
-        <Field label="Intro paragraph">
-          <textarea style={{ ...inp, minHeight: 90 }} value={about.intro || ""}
-            onChange={(e) => setAbout({ intro: e.target.value })} />
-        </Field>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "6px 0 10px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Pillars</h4>
-          <button onClick={() => setAbout({ pillars: [...pillars, { id: Date.now(),
-            icon: "star", title: "New pillar", text: "" }] })} style={miniBtn}>
-            <Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 14 }}>
-          {pillars.map((p, i) => (
-            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-                <div>
-                  <label style={lbl}>Title</label>
-                  <input style={inpSm} value={p.title || ""}
-                    onChange={(e) => editP(i, { title: e.target.value })} />
-                </div>
-                <div>
-                  <label style={lbl}>Icon</label>
-                  <select style={inpSm} value={p.icon || "star"}
-                    onChange={(e) => editP(i, { icon: e.target.value })}>
-                    {["star","book","grad","sparkles","hand","users"].map((k) =>
-                      <option key={k} value={k}>{k}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label style={lbl}>Text</label>
-                <textarea style={{ ...inpSm, minHeight: 64, resize: "vertical" }} value={p.text || ""}
-                  onChange={(e) => editP(i, { text: e.target.value })} />
-              </div>
-              <button onClick={() => setAbout({ pillars: pillars.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete pillar"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "donate") {
-    const d = data.donate || seed.donate;
-    const setD = (patch) => up({ donate: { ...d, ...patch } });
-    const impact = d.impact || [];
-    const editI = (i, patch) => {
-      const c = [...impact]; c[i] = { ...c[i], ...patch }; setD({ impact: c });
-    };
-    return (
-      <Section title="Donations">
-        <Field label="MSA donation URL">
-          <input style={inp} value={d.msaUrl || ""}
-            onChange={(e) => setD({ msaUrl: e.target.value })} />
-        </Field>
-        <Field label="Islamic House donation URL">
-          <input style={inp} value={d.houseUrl || ""}
-            onChange={(e) => setD({ houseUrl: e.target.value })} />
-        </Field>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "6px 0 10px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
-            Impact tiers</h4>
-          <button onClick={() => setD({ impact: [...impact, { id: Date.now(),
-            amount: "$25", text: "" }] })} style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {impact.map((t, i) => (
-            <div key={t.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, gridTemplateColumns: "110px 1fr auto",
-              alignItems: "end" }}>
-              <div>
-                <label style={lbl}>Amount</label>
-                <input style={inpSm} value={t.amount || ""}
-                  onChange={(e) => editI(i, { amount: e.target.value })} />
-              </div>
-              <div>
-                <label style={lbl}>What it covers</label>
-                <input style={inpSm} value={t.text || ""}
-                  onChange={(e) => editI(i, { text: e.target.value })} />
-              </div>
-              <button onClick={() => setD({ impact: impact.filter((_, n) => n !== i) })}
-                style={delBtn} aria-label="Delete tier"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "house") {
-    const h = data.islamicHouse || seed.islamicHouse;
-    const setH = (patch) => up({ islamicHouse: { ...h, ...patch } });
-    const feats = h.features || [];
-    const photos = h.photos || [];
-    const editF = (i, patch) => { const c = [...feats]; c[i] = { ...c[i], ...patch }; setH({ features: c }); };
-    const editPh = (i, patch) => { const c = [...photos]; c[i] = { ...c[i], ...patch }; setH({ photos: c }); };
-    // Same legacy-migration read as the public section: once an admin
-    // touches this list at all, it's saved under futureImages going
-    // forward and the old singular futureImage field is just along for
-    // the ride (harmless, unused once futureImages is non-empty).
-    const futureImgs = (h.futureImages && h.futureImages.length)
-      ? h.futureImages
-      : (h.futureImage ? [{ id: "legacy", img: h.futureImage, caption: "" }] : []);
-    const editFI = (i, patch) => {
-      const c = [...futureImgs]; c[i] = { ...c[i], ...patch }; setH({ futureImages: c });
-    };
-    return (
-      <Section title="Islamic House">
-        <Field label="Address"><input style={inp} value={h.address || ""}
-          onChange={(e) => setH({ address: e.target.value })} /></Field>
-        <Field label="Google Maps link (optional)"><input style={inp} value={h.mapUrl || ""}
-          placeholder="https://maps.google.com/…"
-          onChange={(e) => setH({ mapUrl: e.target.value })} /></Field>
-        <Field label="Hours / prayer note"><input style={inp} value={h.hours || ""}
-          onChange={(e) => setH({ hours: e.target.value })} /></Field>
-        <Field label="Description"><textarea style={{ ...inp, minHeight: 110 }} value={h.body || ""}
-          onChange={(e) => setH({ body: e.target.value })} /></Field>
-        <Field label="Donation URL"><input style={inp} value={h.donateUrl || ""}
-          onChange={(e) => setH({ donateUrl: e.target.value })} /></Field>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "10px 0" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
-            Future building photo(s)</h4>
-          <button onClick={() => setH({ futureImages: [...futureImgs, { id: Date.now(), img: "", caption: "" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <p style={{ margin: "-4px 0 12px", fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Shown above the "Visit" card. One photo shows as-is; add more and it
-          becomes a slideshow with arrows automatically — no extra setup needed.
-        </p>
-        {futureImgs.length === 0 && (
-          <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 8, marginBottom: 12,
-            textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10 }}>
-            None yet — shows a "coming soon" placeholder on the site</div>
-        )}
-        <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-          {futureImgs.map((p, i) => (
-            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
-              <ImageField label="Photo" value={p.img || ""} folder="house"
-                onChange={(url) => editFI(i, { img: url })} />
-              <div><label style={lbl}>Caption (optional)</label>
-                <input style={inpSm} value={p.caption || ""}
-                  onChange={(e) => editFI(i, { caption: e.target.value })} /></div>
-              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
-                <button onClick={() => i > 0 && setH({ futureImages: arraySwap(futureImgs, i, i - 1) })}
-                  disabled={i === 0} style={i === 0 ? moveBtnOff : moveBtn}
-                  aria-label="Move photo up"><ArrowUp size={14} /></button>
-                <button onClick={() => i < futureImgs.length - 1 && setH({ futureImages: arraySwap(futureImgs, i, i + 1) })}
-                  disabled={i === futureImgs.length - 1} style={i === futureImgs.length - 1 ? moveBtnOff : moveBtn}
-                  aria-label="Move photo down"><ArrowDown size={14} /></button>
-                <button onClick={() => setH({ futureImages: futureImgs.filter((_, n) => n !== i) })}
-                  style={delBtn} aria-label="Delete photo"><Trash2 size={15} /></button>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "10px 0" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Highlights</h4>
-          <button onClick={() => setH({ features: [...feats, { id: Date.now(), title: "New", text: "" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {feats.map((f, i) => (
-            <div key={f.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div><label style={lbl}>Title</label>
-                <input style={inpSm} value={f.title || ""}
-                  onChange={(e) => editF(i, { title: e.target.value })} /></div>
-              <div><label style={lbl}>Text</label>
-                <input style={inpSm} value={f.text || ""}
-                  onChange={(e) => editF(i, { text: e.target.value })} /></div>
-              <button onClick={() => setH({ features: feats.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete highlight"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "16px 0 10px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Photos</h4>
-          <button onClick={() => setH({ photos: [...photos, { id: Date.now(), img: "", caption: "" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {photos.map((p, i) => (
-            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
-              <ImageField label="Photo" value={p.img || ""} folder="house"
-                onChange={(url) => editPh(i, { img: url })} />
-              <div><label style={lbl}>Caption (optional)</label>
-                <input style={inpSm} value={p.caption || ""}
-                  onChange={(e) => editPh(i, { caption: e.target.value })} /></div>
-              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
-                <button onClick={() => i > 0 && setH({ photos: arraySwap(photos, i, i - 1) })}
-                  disabled={i === 0} style={i === 0 ? moveBtnOff : moveBtn}
-                  aria-label="Move photo up"><ArrowUp size={14} /></button>
-                <button onClick={() => i < photos.length - 1 && setH({ photos: arraySwap(photos, i, i + 1) })}
-                  disabled={i === photos.length - 1} style={i === photos.length - 1 ? moveBtnOff : moveBtn}
-                  aria-label="Move photo down"><ArrowDown size={14} /></button>
-                <button onClick={() => setH({ photos: photos.filter((_, n) => n !== i) })}
-                  style={delBtn} aria-label="Delete photo"><Trash2 size={15} /></button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "newhere") {
-    const nh = data.newHere || seed.newHere;
-    const setNh = (patch) => up({ newHere: { ...nh, ...patch } });
-    return (
-      <Section title="New here?">
-        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          The heading and paragraph are edited on the Section text tab (look for "New here?").
-          This tab is just the button underneath it.
-        </p>
-        <Field label="Button label">
-          <input style={inp} value={nh.linkLabel || ""}
-            onChange={(e) => setNh({ linkLabel: e.target.value })} />
-        </Field>
-        <Field label="Link URL (e.g. the Muslim Student Guide)">
-          <input style={inp} value={nh.href || ""} placeholder="https://…"
-            onChange={(e) => setNh({ href: e.target.value })} />
-        </Field>
-
-        <div style={{ height: 1, background: "var(--border)", margin: "18px 0" }} />
-        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Second button (e.g. "Guide to being a Muslim at UW"). Leave the URL blank to hide it.
-        </p>
-        <Field label="Second button label">
-          <input style={inp} value={nh.linkLabel2 || ""}
-            onChange={(e) => setNh({ linkLabel2: e.target.value })} />
-        </Field>
-        <Field label="Second link URL">
-          <input style={inp} value={nh.href2 || ""} placeholder="https://…"
-            onChange={(e) => setNh({ href2: e.target.value })} />
-        </Field>
-      </Section>
-    );
-  }
-
-  if (tab === "instagram") {
-    const ig = data.instagram || seed.instagram;
-    const setIg = (patch) => up({ instagram: { ...ig, ...patch } });
-    const posts = ig.posts || [];
-    const editP = (i, patch) => { const c = [...posts]; c[i] = { ...c[i], ...patch }; setIg({ posts: c }); };
-    return (
-      <Section title="Instagram">
-        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Paste the URL of any public Instagram post (copy the link from the "..." menu on the
-          post) — it renders as a real embedded post, no login required. The heading/intro text
-          is edited on the Section text tab.
-        </p>
-        <Field label={'Instagram handle (for the "Follow us" link)'}>
-          <input style={inp} value={ig.handle || ""} placeholder="msa_uw"
-            onChange={(e) => setIg({ handle: e.target.value })} />
-        </Field>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "16px 0 10px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Posts</h4>
-          <button onClick={() => setIg({ posts: [...posts, { id: Date.now(), url: "" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {posts.map((p, i) => (
-            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div><label style={lbl}>Post URL</label>
-                <input style={inpSm} value={p.url || ""} placeholder="https://www.instagram.com/p/…"
-                  onChange={(e) => editP(i, { url: e.target.value })} /></div>
-              <button onClick={() => setIg({ posts: posts.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete post"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "tiktok") {
-    const tk = data.tiktok || seed.tiktok;
-    const setTk = (patch) => up({ tiktok: { ...tk, ...patch } });
-    const posts = tk.posts || [];
-    const editP = (i, patch) => { const c = [...posts]; c[i] = { ...c[i], ...patch }; setTk({ posts: c }); };
-    return (
-      <Section title="TikTok">
-        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Paste the URL of any public TikTok video (copy the share link) to pin specific videos —
-          each renders as a real embedded video, no login required. With no videos pinned, the
-          section instead shows TikTok's own live profile card for the handle below (avatar,
-          follower count, and up to 10 recent videos, updating on its own — nothing to maintain
-          here). The heading/intro text is edited on the Section text tab.
-        </p>
-        <Field label={'TikTok handle (for the "Follow us" link)'}>
-          <input style={inp} value={tk.handle || ""} placeholder="msa.uw"
-            onChange={(e) => setTk({ handle: e.target.value })} />
-        </Field>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "16px 0 10px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Videos</h4>
-          <button onClick={() => setTk({ posts: [...posts, { id: Date.now(), url: "" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {posts.map((p, i) => (
-            <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div><label style={lbl}>Video URL</label>
-                <input style={inpSm} value={p.url || ""} placeholder="https://www.tiktok.com/@msa.uw/video/…"
-                  onChange={(e) => editP(i, { url: e.target.value })} /></div>
-              <button onClick={() => setTk({ posts: posts.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete video"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "merch") {
-    const mc = data.merch || seed.merch;
-    const setM = (patch) => up({ merch: { ...mc, ...patch } });
-    const items = mc.items || [];
-    const editI = (i, patch) => { const c = [...items]; c[i] = { ...c[i], ...patch }; setM({ items: c }); };
-    const channels = mc.channels || [];
-    const editC = (i, patch) => { const c = [...channels]; c[i] = { ...c[i], ...patch }; setM({ channels: c }); };
-    return (
-      <Section title="Merch">
-        <p style={{ margin: "-8px 0 18px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Advertise upcoming merch with photos now. When it's orderable, turn on
-          <b> "Merch is available"</b> to reveal the ordering options below it. Heading text
-          is on this tab.
-        </p>
-        <Field label="Eyebrow (small label)">
-          <input style={inp} value={mc.eyebrow || ""} onChange={(e) => setM({ eyebrow: e.target.value })} />
-        </Field>
-        <Field label="Title">
-          <input style={inp} value={mc.title || ""} onChange={(e) => setM({ title: e.target.value })} />
-        </Field>
-        <Field label="Intro line">
-          <input style={inp} value={mc.intro || ""} onChange={(e) => setM({ intro: e.target.value })} />
-        </Field>
-        <Field label="Store link (the button beneath the photos sends people here)">
-          <input style={inp} value={mc.orderUrl || ""} placeholder="https://…"
-            onChange={(e) => setM({ orderUrl: e.target.value })} />
-        </Field>
-        <label style={{ display: "flex", alignItems: "center", gap: 10, margin: "6px 0 4px",
-          cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
-          <input type="checkbox" checked={!!mc.available}
-            onChange={(e) => setM({ available: e.target.checked })} />
-          Merch is available (show ordering options)
-        </label>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "18px 0 10px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>Products</h4>
-          <button onClick={() => setM({ items: [...items, { id: Date.now(), name: "", note: "", img: "" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {items.map((it, i) => {
-            // `images` is the current field; a lone legacy `img` (from
-            // before multiple photos per product were supported) still
-            // reads fine here — it just shows as this product's one photo
-            // until edited, same pattern boardLinks() uses for the old
-            // single-href board members.
-            const imgs = it.images && it.images.length ? it.images : (it.img ? [it.img] : []);
-            const setImgs = (next) => editI(i, { images: next, img: "" });
-            return (
-            <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div><label style={lbl}>Name</label>
-                <input style={inpSm} value={it.name || ""} placeholder="MSA x Intentions Hoodie"
-                  onChange={(e) => editI(i, { name: e.target.value })} /></div>
-              <div><label style={lbl}>Note (color, sizing…)</label>
-                <input style={inpSm} value={it.note || ""} placeholder="Off-white · unisex"
-                  onChange={(e) => editI(i, { note: e.target.value })} /></div>
-              <div>
-                <label style={lbl}>Photos (front, back, worn — add as many as you like)</label>
-                <div style={{ display: "grid", gap: 6 }}>
-                  {imgs.map((url, ii) => (
-                    <div key={ii} style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-                      <div style={{ flex: 1 }}>
-                        <ImageField label={`Photo ${ii + 1}`} value={url} folder="merch"
-                          onChange={(newUrl) => {
-                            const next = imgs.slice(); next[ii] = newUrl;
-                            setImgs(next.filter(Boolean));
-                          }} />
-                      </div>
-                      <button type="button" onClick={() => setImgs(imgs.filter((_, xi) => xi !== ii))}
-                        style={{ ...delBtn, width: 30, height: 30, marginBottom: 12 }}
-                        aria-label={`Remove photo ${ii + 1}`}><Trash2 size={14} /></button>
-                    </div>
-                  ))}
-                </div>
-                <button type="button" onClick={() => setImgs([...imgs, ""])}
-                  style={{ ...miniBtn, marginTop: imgs.length ? 4 : 0 }}>
-                  <Plus size={13} /> Add photo</button>
-              </div>
-              <button onClick={() => setM({ items: items.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete product"><Trash2 size={15} /></button>
-            </div>
-            );
-          })}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-          margin: "22px 0 6px" }}>
-          <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
-            Ordering options</h4>
-          <button onClick={() => setM({ channels: [...channels, { id: Date.now(), label: "", href: "", kind: "link" }] })}
-            style={miniBtn}><Plus size={14} /> Add</button>
-        </div>
-        <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          Shown only when "Merch is available" is on. Icon options: <b>link</b> (online store),
-          <b> instagram</b> (DM), <b>table</b> (da'wah table).
-        </p>
-        <Field label="Ordering intro line">
-          <input style={inp} value={mc.orderNote || ""} onChange={(e) => setM({ orderNote: e.target.value })} />
-        </Field>
-        <div style={{ display: "grid", gap: 12 }}>
-          {channels.map((c, i) => (
-            <div key={c.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div><label style={lbl}>Label</label>
-                <input style={inpSm} value={c.label || ""} placeholder="Order online (Intentions HQ)"
-                  onChange={(e) => editC(i, { label: e.target.value })} /></div>
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "2fr 1fr" }}>
-                <div><label style={lbl}>Link (optional)</label>
-                  <input style={inpSm} value={c.href || ""} placeholder="https://…"
-                    onChange={(e) => editC(i, { href: e.target.value })} /></div>
-                <div><label style={lbl}>Icon</label>
-                  <input style={inpSm} value={c.kind || ""} placeholder="link / instagram / table"
-                    onChange={(e) => editC(i, { kind: e.target.value })} /></div>
-              </div>
-              <button onClick={() => setM({ channels: channels.filter((_, n) => n !== i) })}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete option"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "calendar") {
-    const items = data.calendar || [];
-    const set = (next) => up({ calendar: next });
-    const edit = (i, patch) => { const c = [...items]; c[i] = { ...c[i], ...patch }; set(c); };
-    const sorted = [...items].sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    return (
-      <Section title="Dated events (monthly calendar)">
-        <p style={{ margin: "-8px 0 16px", fontSize: 13, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          These appear in the monthly calendar view. The weekly view is edited on the Events tab.
-        </p>
-        <button className="btn" onClick={() => set([...items, { id: Date.now(),
-          date: new Date().toISOString().slice(0, 10), name: "New event",
-          time: "", loc: "", desc: "", category: "" }])}
-          style={{ ...btnPurple, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Plus size={16} /> Add dated event</button>
-        <div style={{ display: "grid", gap: 14 }}>
-          {items.length === 0 && (
-            <div style={{ color: "var(--text-faint)", fontSize: 13, padding: 10, textAlign: "center",
-              border: "1px dashed var(--border)", borderRadius: 10 }}>No dated events yet</div>
-          )}
-          {items.map((e, i) => (
-            <div key={e.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-              padding: 14, display: "grid", gap: 8, position: "relative" }}>
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-                <div><label style={lbl}>Date</label>
-                  <input type="date" style={inpSm} value={e.date || ""}
-                    onChange={(ev) => edit(i, { date: ev.target.value })} /></div>
-                <div><label style={lbl}>Time</label>
-                  <input style={inpSm} placeholder="6:00 PM" value={e.time || ""}
-                    onChange={(ev) => edit(i, { time: ev.target.value })} /></div>
-              </div>
-              <div><label style={lbl}>Name</label>
-                <input style={inpSm} value={e.name || ""}
-                  onChange={(ev) => edit(i, { name: ev.target.value })} /></div>
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
-                <div><label style={lbl}>Location</label>
-                  <input style={inpSm} value={e.loc || ""}
-                    onChange={(ev) => edit(i, { loc: ev.target.value })} /></div>
-                <div><label style={lbl}>Category (for filtering)</label>
-                  <input style={inpSm} placeholder="e.g. Social, Halaqa, Sports" value={e.category || ""}
-                    onChange={(ev) => edit(i, { category: ev.target.value })} /></div>
-              </div>
-              <div><label style={lbl}>Description (optional)</label>
-                <input style={inpSm} value={e.desc || ""}
-                  onChange={(ev) => edit(i, { desc: ev.target.value })} /></div>
-              <button onClick={() => set(items.filter((_, n) => n !== i))}
-                style={{ ...delBtn, position: "absolute", top: 10, right: 10 }}
-                aria-label="Delete event"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "history") {
-    return <AdminHistory />;
-  }
-
-  if (tab === "contact") {
-    const c = data.contact || seed.contact;
-    const setC = (patch) => up({ contact: { ...c, ...patch } });
-    const extra = data.eventsExtra || seed.eventsExtra;
-    const setE = (patch) => up({ eventsExtra: { ...extra, ...patch } });
-    return (
-      <Section title="Contact & suggestions">
-        <Field label="Contact email">
-          <input style={inp} value={c.email || ""}
-            onChange={(e) => setC({ email: e.target.value })} />
-        </Field>
-        <Field label="Note under the email">
-          <textarea style={{ ...inp, minHeight: 70 }} value={c.note || ""}
-            onChange={(e) => setC({ note: e.target.value })} />
-        </Field>
-        <div style={{ height: 1, background: "var(--border)", margin: "18px 0" }} />
-        <Field label="“Suggest an event” form URL (Google Form or similar)">
-          <input style={inp} placeholder="https://forms.gle/…" value={extra.suggestUrl || ""}
-            onChange={(e) => setE({ suggestUrl: e.target.value })} />
-        </Field>
-        <Field label="Suggestion prompt text">
-          <input style={inp} value={extra.suggestNote || ""}
-            onChange={(e) => setE({ suggestNote: e.target.value })} />
-        </Field>
-        <div style={{ height: 1, background: "var(--border)", margin: "18px 0" }} />
-        <Field label="Notion calendar embed URL (published *.notion.site link)">
-          <input style={inp} placeholder="https://your-page.notion.site/…" value={extra.notionUrl || ""}
-            onChange={(e) => setE({ notionUrl: e.target.value })} />
-        </Field>
-        <p style={{ fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6 }}>
-          In Notion open the calendar → Share → <b>Publish</b> → copy the published link
-          (it ends in <b>.notion.site</b>). Paste it here and the monthly view shows your
-          Notion calendar. Leave blank to use the built-in calendar. A private
-          app.notion.com link can't be embedded.
-        </p>
-      </Section>
-    );
-  }
-
-  if (tab === "bar") {
-    const bar = data.bar || seed.bar;
-    const setBar = (patch) => up({ bar: { ...bar, ...patch } });
-    return (
-      <Section title="Announcement bar">
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 9,
-          fontSize: 14, color: "var(--text-soft)", cursor: "pointer", marginBottom: 14 }}>
-          <input type="checkbox" checked={!!bar.on}
-            onChange={(e) => setBar({ on: e.target.checked })} />
-          Show the announcement bar above the navigation
-        </label>
-        <Field label="Bar message">
-          <input style={inp} value={bar.text || ""}
-            placeholder="e.g. Board applications close November 14."
-            onChange={(e) => setBar({ text: e.target.value })} />
-        </Field>
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-          <Field label="Link label (optional)">
-            <input style={inp} value={bar.linkLabel || ""} placeholder="Apply now"
-              onChange={(e) => setBar({ linkLabel: e.target.value })} />
-          </Field>
-          <Field label="Link URL — or #section">
-            <input style={inp} value={bar.href || ""} placeholder="https://…  or  #events"
-              onChange={(e) => setBar({ href: e.target.value })} />
-          </Field>
-        </div>
-        <p style={{ margin: "-4px 0 10px", fontSize: 12.5, color: "var(--text-faint)",
-          lineHeight: 1.6 }}>
-          Editing the message shows the bar again to everyone who dismissed the previous one.
-          Link to a page (<b>/events</b>, <b>/about#donate</b>) or an external URL.
-        </p>
-        <div style={{ margin: "4px 0 4px", padding: "10px 12px", borderRadius: 10,
-          background: "var(--tint)", fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6 }}>
-          The hero is now a scroll-driven cherry-blossom image sequence — there's no video to
-          configure. Frames live in <b>public/hero/</b>.
-        </div>
-      </Section>
-    );
-  }
-
-  if (tab === "mailing") {
-    const m = data.mailing || seed.mailing;
-    const setM = (patch) => up({ mailing: { ...m, ...patch } });
-    return (
-      <Section title="Mailing list">
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 9,
-          fontSize: 14, color: "var(--text-soft)", cursor: "pointer", marginBottom: 14 }}>
-          <input type="checkbox" checked={!!m.on}
-            onChange={(e) => setM({ on: e.target.checked })} />
-          Show the mailing list section
-        </label>
-        <Field label="Heading">
-          <input style={inp} value={m.title || ""}
-            onChange={(e) => setM({ title: e.target.value })} />
-        </Field>
-        <Field label="Description">
-          <textarea style={{ ...inp, minHeight: 70 }} value={m.body || ""}
-            onChange={(e) => setM({ body: e.target.value })} />
-        </Field>
-        <Field label="External form URL (optional — leave blank to collect signups here)">
-          <input style={inp} value={m.externalUrl || ""} placeholder="https://forms.gle/…"
-            onChange={(e) => setM({ externalUrl: e.target.value })} />
-        </Field>
-        <SubscriberList />
-      </Section>
-    );
-  }
-
-  if (tab === "stats")
-    return (
-      <ListEditor title="Stats" items={data.stats || []}
-        onChange={(stats) => up({ stats })}
-        blank={{ value: "0", suffix: "+", label: "New stat" }}
-        fields={[["value", "Number"], ["suffix", "Suffix (e.g. + or %)"], ["label", "Label"]]} />
-    );
-
-  if (tab === "links")
-    return (
-      <ListEditor title="External links" items={data.links}
-        onChange={(links) => up({ links })}
-        blank={{ name: "New link", href: "https://", kind: "link" }}
-        fields={[["name", "Label"], ["href", "URL"], ["kind", "Icon (link/discord/facebook/instagram/tiktok/linkedin/donate)"]]} />
-    );
-
-  return null;
-}
-
+/* ---------- shared styles ----------
+   Inline-style objects reused across sections, and by admin/AdminPanel.jsx
+   through the export list at the bottom of this file. */
 const lbl = { fontSize: 12, fontWeight: 600, color: "var(--text-faint)" };
-
-/* Admin-only: view and export mailing list signups. */
-function SubscriberList() {
-  const [rows, setRows] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-
-  const load = async () => {
-    setBusy(true); setErr("");
-    const res = await listSubscribers();
-    setBusy(false);
-    if (res.ok) setRows(res.rows);
-    else setErr(res.error);
-  };
-
-  const exportCsv = () => {
-    if (!rows?.length) return;
-    const head = ["First name", "Last name", "Email", "Status", "Joined"];
-    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const csv = [head.map(esc).join(",")].concat(
-      rows.map((r) => [r.first_name, r.last_name, r.email, r.status,
-        (r.created_at || "").slice(0, 10)].map(esc).join(","))
-    ).join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url; a.download = `msa-subscribers-${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid var(--border)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-        gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-        <h4 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: "var(--accent)" }}>
-          Signups{rows ? ` (${rows.length})` : ""}</h4>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn" onClick={load} disabled={busy} style={miniBtn}>
-            {busy ? "Loading…" : rows ? "Refresh" : "Load list"}</button>
-          {!!rows?.length && (
-            <button className="btn" onClick={exportCsv} style={miniBtn}>Export CSV</button>
-          )}
-        </div>
-      </div>
-      {err && <div style={{ fontSize: 13, color: "#c0392b", marginBottom: 8 }}>{err}</div>}
-      {rows && rows.length === 0 && (
-        <div style={{ fontSize: 13, color: "var(--text-faint)" }}>No signups yet.</div>
-      )}
-      {!!rows?.length && (
-        <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)",
-          borderRadius: 10 }}>
-          {rows.map((r, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12,
-              padding: "9px 12px", fontSize: 13,
-              borderBottom: i < rows.length - 1 ? "1px solid var(--border)" : "none" }}>
-              <span style={{ color: "var(--text)", minWidth: 0, overflow: "hidden",
-                textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {[r.first_name, r.last_name].filter(Boolean).join(" ") || "—"}
-                <span style={{ color: "var(--text-faint)" }}> · {r.email}</span>
-              </span>
-              <span style={{ color: "var(--text-faint)", flexShrink: 0 }}>
-                {(r.created_at || "").slice(0, 10)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--text-faint)", lineHeight: 1.6 }}>
-        Only signed-in admins can read this list — it isn't exposed publicly.
-      </p>
-    </div>
-  );
-}
-
-function Section({ title, children }) {
-  return (
-    <div>
-      <h3 style={{ margin: "0 0 18px", color: "var(--accent)", fontSize: 19, fontWeight: 700 }}>{title}</h3>
-      {children}
-    </div>
-  );
-}
-function Field({ label, children }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--text-soft)",
-        marginBottom: 6 }}>{label}</label>
-      {children}
-    </div>
-  );
-}
-// Upload / preview / remove a single image (gallery, sponsors, events).
-function ImageField({ value, onChange, folder = "gallery", label = "Image" }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const inputRef = useRef(null);
-
-  const pick = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setErr(""); setBusy(true);
-    const res = await uploadImage(file, folder);
-    setBusy(false);
-    if (res.ok) onChange(res.url); else setErr(res.error);
-    if (inputRef.current) inputRef.current.value = "";
-  };
-
-  const remove = async () => {
-    const p = pathFromUrl(value);
-    onChange("");
-    if (p) await deleteImage(p);
-  };
-
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>{label}</label>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 5 }}>
-        <div style={{ width: 74, height: 56, borderRadius: 9, overflow: "hidden", flexShrink: 0,
-          border: "1px solid var(--border-strong)", background: "var(--surface-2)", display: "grid", placeItems: "center" }}>
-          {value ? <img src={value} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                 : <span style={{ fontSize: 10.5, color: "var(--text-faint)" }}>None</span>}
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" onClick={() => inputRef.current?.click()} disabled={busy}
-            style={{ ...miniBtn, opacity: busy ? .6 : 1 }}>
-            {busy ? "Uploading…" : value ? "Replace" : "Upload"}
-          </button>
-          {value && <button type="button" onClick={remove}
-            style={{ ...miniBtn, background: "rgba(192,57,43,.1)", color: "#c0392b" }}>Remove</button>}
-          <input ref={inputRef} type="file" accept="image/*" onChange={pick} style={{ display: "none" }} />
-        </div>
-      </div>
-      {err && <div style={{ color: "#c0392b", fontSize: 12, marginTop: 6 }}>{err}</div>}
-    </div>
-  );
-}
-// Swaps items i and j (both indices into `items`, keys preserved) — the
-// building block for every "move up / move down" reorder control. Pure/
-// immutable so it composes cleanly with the various setState callbacks
-// each admin tab already uses.
-function arraySwap(items, i, j) {
-  if (i < 0 || j < 0 || i >= items.length || j >= items.length) return items;
-  const c = items.slice();
-  [c[i], c[j]] = [c[j], c[i]];
-  return c;
-}
-
-const moveBtn = { background: "var(--tint)", color: "var(--accent)", border: "none", borderRadius: 8,
-  width: 30, height: 30, display: "grid", placeItems: "center", cursor: "pointer" };
-const moveBtnOff = { ...moveBtn, opacity: 0.3, cursor: "default" };
-
-function ListEditor({ title, items, onChange, blank, fields }) {
-  const add = () => onChange([...items, { id: Date.now(), ...blank }]);
-  const del = (i) => onChange(items.filter((_, n) => n !== i));
-  const edit = (i, key, val) => { const c = [...items]; c[i] = { ...c[i], [key]: val }; onChange(c); };
-  const move = (i, dir) => onChange(arraySwap(items, i, i + dir));
-  return (
-    <Section title={title}>
-      <button className="btn" onClick={add} style={{ ...btnPurple, marginBottom: 16, display: "inline-flex",
-        alignItems: "center", gap: 6 }}><Plus size={16} /> Add</button>
-      {/* Reorder with the arrow buttons instead of deleting and re-adding —
-          position on the live site follows this list's order directly. */}
-      <div style={{ display: "grid", gap: 14 }}>
-        {items.map((it, i) => (
-          <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 12,
-            padding: 14, paddingRight: 112, display: "grid", gap: 8, position: "relative" }}>
-            {fields.map(([key, lbl, kind]) => (
-              kind === "image" ? (
-                <ImageField key={key} label={lbl} value={it[key] || ""}
-                  folder={title.toLowerCase().includes("sponsor") ? "sponsors" : "gallery"}
-                  onChange={(url) => edit(i, key, url)} />
-              ) : (
-                <div key={key}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)" }}>{lbl}</label>
-                  <input style={inpSm} value={it[key] || ""} onChange={(e) => edit(i, key, e.target.value)} />
-                </div>
-              )
-            ))}
-            <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
-              <button onClick={() => i > 0 && move(i, -1)} disabled={i === 0}
-                style={i === 0 ? moveBtnOff : moveBtn} aria-label="Move up"><ArrowUp size={14} /></button>
-              <button onClick={() => i < items.length - 1 && move(i, 1)} disabled={i === items.length - 1}
-                style={i === items.length - 1 ? moveBtnOff : moveBtn} aria-label="Move down"><ArrowDown size={14} /></button>
-              <button onClick={() => del(i)} style={delBtn} aria-label="Delete"><Trash2 size={15} /></button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </Section>
-  );
-}
-
-/* ---------- shared styles ---------- */
 const card = { background: "var(--surface)", borderRadius: 18, border: "1px solid var(--border)",
   boxShadow: "var(--card-shadow)" };
 const btnGold = { background: GOLD, color: "#2c2418", border: "none", padding: "14px 28px",
@@ -8349,3 +6836,12 @@ const miniBtn = { display: "inline-flex", alignItems: "center", gap: 5, backgrou
   cursor: "pointer", fontFamily: "inherit" };
 const delBtn = { background: "rgba(192,57,43,.1)", color: "#c0392b", border: "none", borderRadius: 8,
   width: 34, height: 34, display: "grid", placeItems: "center", cursor: "pointer" };
+
+/* Re-exported for the lazily loaded admin dashboard (src/admin/AdminPanel.jsx),
+   so it can never drift from the public site's colours, easing curves or
+   seed content. */
+export {
+  DAYS, DUR, EASE, GOLD, GRAD_DEEP, PURPLE, seed,
+  Eyebrow, Title, boardLinks, linkLabel,
+  card, btnGold, btnGhost, btnPurple, inp, inpSm, miniBtn, delBtn, lbl,
+};
