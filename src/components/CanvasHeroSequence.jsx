@@ -348,7 +348,6 @@ export default function CanvasHeroSequence({
           {children}
           {!reduced && (
             <button type="button" onClick={start} className="hero-play"
-              aria-describedby="hero-play-note"
               style={{
                 display: "inline-flex", alignItems: "center", gap: 10,
                 padding: "12px 22px", borderRadius: 999, cursor: "pointer",
@@ -363,12 +362,6 @@ export default function CanvasHeroSequence({
               </svg>
               Play the bloom
             </button>
-          )}
-          {!reduced && (
-            <span id="hero-play-note" style={{ fontSize: 12.5, color: "rgba(255,255,255,.78)",
-              marginTop: -16 }}>
-              Optional scroll animation · loads about {pickSize() === "sm" ? "5" : "14"} MB
-            </span>
           )}
         </div>
       </section>
